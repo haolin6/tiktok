@@ -188,10 +188,27 @@ class SocketIoRealtimeHub implements RealtimeHub {
           bidId: response.bid.id,
           userId: response.bid.userId,
           amount: response.bid.amount,
-          requestId: response.bid.requestId
+          requestId: response.bid.requestId,
+          previousWinnerId: response.previousWinnerId
         }
       })
     );
+
+    if (response.previousWinnerId !== null && response.previousWinnerId !== response.bid.userId) {
+      this.emitToRoom(
+        userRoomName(response.previousWinnerId),
+        this.makeEvent("user.outbid", {
+          auctionId: response.bid.auctionId,
+          roomId,
+          payload: {
+            auctionId: response.bid.auctionId,
+            previousWinnerId: response.previousWinnerId,
+            newWinnerId: response.bid.userId,
+            amount: response.bid.amount
+          }
+        })
+      );
+    }
 
     const streams = await getAuctionBidStreams(this.pool, response.bid.auctionId);
     this.emitToRoom(

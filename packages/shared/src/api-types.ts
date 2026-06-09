@@ -103,6 +103,20 @@ export interface CreateAuctionResponse {
   auction: AuctionDto;
 }
 
+export interface UpdateAuctionRequest {
+  startPrice?: number;
+  incrementStep?: number;
+  ceilingPrice?: number | null;
+  startAt?: string;
+  endAt?: string;
+  extendThresholdSec?: number;
+  extendDurationSec?: number;
+}
+
+export interface UpdateAuctionResponse {
+  auction: AuctionDto;
+}
+
 export interface AuctionListResponse {
   items: AuctionDto[];
 }
@@ -154,6 +168,7 @@ export interface PlaceBidResponse {
   auction: AuctionDto;
   snapshot: AuctionSnapshotResponse;
   extension: AuctionExtensionDto | null;
+  previousWinnerId: number | null;
   idempotentReplay?: boolean;
 }
 

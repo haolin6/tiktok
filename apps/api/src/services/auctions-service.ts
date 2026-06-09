@@ -10,7 +10,8 @@ import {
   type CancelAuctionRequest,
   type CreateAuctionRequest,
   type PlaceBidRequest,
-  type PlaceBidResponse
+  type PlaceBidResponse,
+  type UpdateAuctionRequest
 } from "@live-auction/shared";
 import type { DbPool } from "../db/pool.js";
 import type { DbExecutor } from "../db/executor.js";
@@ -23,6 +24,7 @@ import {
   listAuctions,
   updateAuctionCurrentBid,
   updateAuctionEndAt,
+  updateScheduledAuctionRules,
   updateAuctionStatus
 } from "../repositories/auctions-repository.js";
 import {
@@ -78,6 +80,57 @@ function toCents(value: number): number {
 
 function fromCents(value: number): number {
   return value / 100;
+}
+
+interface AuctionRuleValues {
+  startPrice: number;
+  incrementStep: number;
+  ceilingPrice: number | null;
+  startAt: Date;
+  endAt: Date;
+  extendThresholdSec: number;
+  extendDurationSec: number;
+}
+
+interface AuctionRuleEvidence {
+  startPrice: number;
+  incrementStep: number;
+  ceilingPrice: number | null;
+  startAt: string;
+  endAt: string;
+  extendThresholdSec: number;
+  extendDurationSec: number;
+}
+
+function assertAuctionRuleValues(values: AuctionRuleValues): void {
+  assertNonNegativeNumber(values.startPrice, "startPrice");
+  assertPositiveNumber(values.incrementStep, "incrementStep");
+
+  if (values.ceilingPrice !== null) {
+    assertNonNegativeNumber(values.ceilingPrice, "ceilingPrice");
+    if (values.ceilingPrice < values.startPrice) {
+      throw validationError("ceilingPrice must be greater than or equal to startPrice.");
+    }
+  }
+
+  if (values.endAt.getTime() <= values.startAt.getTime()) {
+    throw validationError("endAt must be later than startAt.");
+  }
+
+  assertPositiveNumber(values.extendThresholdSec, "extendThresholdSec");
+  assertPositiveNumber(values.extendDurationSec, "extendDurationSec");
+}
+
+function rulesFromAuction(auction: AuctionDto): AuctionRuleEvidence {
+  return {
+    startPrice: auction.startPrice,
+    incrementStep: auction.incrementStep,
+    ceilingPrice: auction.ceilingPrice,
+    startAt: auction.startAt,
+    endAt: auction.endAt,
+    extendThresholdSec: auction.extendThresholdSec,
+    extendDurationSec: auction.extendDurationSec
+  };
 }
 
 function calculateNextBidAmount(auction: AuctionDto): number | null {
@@ -281,26 +334,20 @@ export async function createAuction(
   pool: DbPool,
   input: CreateAuctionRequest
 ): Promise<AuctionDto> {
-  assertNonNegativeNumber(input.startPrice, "startPrice");
-  assertPositiveNumber(input.incrementStep, "incrementStep");
-
-  if (input.ceilingPrice !== undefined && input.ceilingPrice !== null) {
-    assertNonNegativeNumber(input.ceilingPrice, "ceilingPrice");
-    if (input.ceilingPrice < input.startPrice) {
-      throw validationError("ceilingPrice must be greater than or equal to startPrice.");
-    }
-  }
-
   const startAt = parseRequiredDate(input.startAt, "startAt");
   const endAt = parseRequiredDate(input.endAt, "endAt");
-  if (endAt.getTime() <= startAt.getTime()) {
-    throw validationError("endAt must be later than startAt.");
-  }
-
   const extendThresholdSec = input.extendThresholdSec ?? 10;
   const extendDurationSec = input.extendDurationSec ?? 10;
-  assertPositiveNumber(extendThresholdSec, "extendThresholdSec");
-  assertPositiveNumber(extendDurationSec, "extendDurationSec");
+  const rules: AuctionRuleValues = {
+    startPrice: input.startPrice,
+    incrementStep: input.incrementStep,
+    ceilingPrice: input.ceilingPrice ?? null,
+    startAt,
+    endAt,
+    extendThresholdSec,
+    extendDurationSec
+  };
+  assertAuctionRuleValues(rules);
 
   const connection = await pool.getConnection();
   try {
@@ -317,13 +364,13 @@ export async function createAuction(
     const auction = await insertAuction(connection, {
       roomId: input.roomId,
       productId: input.productId,
-      startPrice: input.startPrice,
-      incrementStep: input.incrementStep,
-      ceilingPrice: input.ceilingPrice ?? null,
-      startAt,
-      endAt,
-      extendThresholdSec,
-      extendDurationSec,
+      startPrice: rules.startPrice,
+      incrementStep: rules.incrementStep,
+      ceilingPrice: rules.ceilingPrice,
+      startAt: rules.startAt,
+      endAt: rules.endAt,
+      extendThresholdSec: rules.extendThresholdSec,
+      extendDurationSec: rules.extendDurationSec,
       createdBy
     });
 
@@ -457,6 +504,57 @@ export async function startAuction(pool: DbPool, auctionId: number): Promise<Auc
   }
 }
 
+export async function updateAuction(
+  pool: DbPool,
+  auctionId: number,
+  input: UpdateAuctionRequest
+): Promise<AuctionDto> {
+  if (Object.keys(input).length === 0) {
+    throw validationError("At least one auction rule field is required.");
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const currentAuction = await findAuctionByIdForUpdate(connection, auctionId);
+    if (currentAuction.status !== "Scheduled") {
+      throw conflict(`Auction ${auctionId} cannot be updated from ${currentAuction.status}.`);
+    }
+
+    const hasCeilingPrice = Object.prototype.hasOwnProperty.call(input, "ceilingPrice");
+    const rules: AuctionRuleValues = {
+      startPrice: input.startPrice ?? currentAuction.startPrice,
+      incrementStep: input.incrementStep ?? currentAuction.incrementStep,
+      ceilingPrice: hasCeilingPrice ? input.ceilingPrice ?? null : currentAuction.ceilingPrice,
+      startAt: parseRequiredDate(input.startAt ?? currentAuction.startAt, "startAt"),
+      endAt: parseRequiredDate(input.endAt ?? currentAuction.endAt, "endAt"),
+      extendThresholdSec: input.extendThresholdSec ?? currentAuction.extendThresholdSec,
+      extendDurationSec: input.extendDurationSec ?? currentAuction.extendDurationSec
+    };
+    assertAuctionRuleValues(rules);
+
+    const updatedAuction = await updateScheduledAuctionRules(connection, auctionId, rules);
+    await insertAuctionEvent(connection, {
+      auctionId,
+      eventType: "auction.updated",
+      payload: {
+        auctionId,
+        previous: rulesFromAuction(currentAuction),
+        current: rulesFromAuction(updatedAuction)
+      }
+    });
+
+    await connection.commit();
+    return updatedAuction;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export async function placeBid(
   pool: DbPool,
   auctionId: number,
@@ -572,6 +670,7 @@ async function responseFromExistingBid(
     auction: await findAuctionById(pool, auctionId),
     snapshot: await getAuctionSnapshot(pool, auctionId),
     extension: null,
+    previousWinnerId: null,
     idempotentReplay: true
   };
 }
@@ -600,6 +699,7 @@ async function processBidWithMysqlLock(
             auction,
             snapshot: await getAuctionSnapshot(pool, auctionId),
             extension: null,
+            previousWinnerId: null,
             idempotentReplay: true
           }
         };
@@ -688,6 +788,7 @@ async function processBidWithMysqlLock(
         auction: finalAuction,
         snapshot: await getAuctionSnapshot(pool, auctionId),
         extension: extensionResult.extension,
+        previousWinnerId,
         idempotentReplay: false
       }
     };

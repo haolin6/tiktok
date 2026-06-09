@@ -9,7 +9,9 @@ import type {
   CreateAuctionResponse,
   PlaceBidRequest,
   PlaceBidResponse,
-  StartAuctionResponse
+  StartAuctionResponse,
+  UpdateAuctionRequest,
+  UpdateAuctionResponse
 } from "@live-auction/shared";
 import type { DbPool } from "../db/pool.js";
 import type { RealtimeHub } from "../realtime/realtime-hub.js";
@@ -20,7 +22,8 @@ import {
   getAuctionList,
   getAuctionSnapshotWithSettlementSignal,
   placeBid,
-  startAuction
+  startAuction,
+  updateAuction
 } from "../services/auctions-service.js";
 import type { BidCoordinator } from "../services/bid-coordinator.js";
 import { parseNumericId } from "./route-helpers.js";
@@ -72,6 +75,40 @@ export async function registerAuctionRoutes(
     "/api/auctions/:id",
     async (request) => {
       return getAuctionDetail(pool, parseNumericId(request.params.id, "auction id"));
+    }
+  );
+
+  app.patch<{
+    Params: AuctionIdParams;
+    Body: UpdateAuctionRequest;
+    Reply: UpdateAuctionResponse;
+  }>(
+    "/api/auctions/:id",
+    {
+      schema: {
+        body: {
+          type: "object",
+          minProperties: 1,
+          additionalProperties: false,
+          properties: {
+            startPrice: { type: "number", minimum: 0 },
+            incrementStep: { type: "number", exclusiveMinimum: 0 },
+            ceilingPrice: { type: ["number", "null"], minimum: 0 },
+            startAt: { type: "string", format: "date-time" },
+            endAt: { type: "string", format: "date-time" },
+            extendThresholdSec: { type: "integer", minimum: 1 },
+            extendDurationSec: { type: "integer", minimum: 1 }
+          }
+        }
+      }
+    },
+    async (request) => {
+      const auction = await updateAuction(
+        pool,
+        parseNumericId(request.params.id, "auction id"),
+        request.body
+      );
+      return { auction };
     }
   );
 

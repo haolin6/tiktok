@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:migrate": "tsx src/scripts/migrate.ts",
     "db:seed": "tsx src/scripts/seed.ts",
-    "demo:concurrency": "tsx src/scripts/simulate-concurrency.ts"
+    "demo:concurrency": "tsx src/scripts/simulate-concurrency.ts",
+    "demo:realtime-fanout": "tsx src/scripts/simulate-realtime-fanout.ts"
   },
   "dependencies": {
     "@live-auction/shared": "file:../../packages/shared",
@@ -21,5 +22,8 @@
     "mysql2": "^3.14.1",
     "redis": "^6.0.0",
     "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.3"
   }
 }

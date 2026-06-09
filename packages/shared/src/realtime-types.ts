@@ -60,6 +60,7 @@ export interface BidAcceptedPayload {
   userId: number;
   amount: number;
   requestId: string;
+  previousWinnerId: number | null;
 }
 
 export interface BidRejectedPayload {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AuctionDto,
+  AuctionDetailResponse,
   AuctionListResponse,
   AuctionSnapshotResponse,
   AnyRealtimeServerEvent,
@@ -14,6 +15,7 @@ import type {
   OrderListResponse,
   OrderSummaryDto,
   PlaceBidResponse,
+  UpdateAuctionResponse,
   UserBidListResponse,
   UserDto,
   UserOrderListResponse
@@ -32,6 +34,25 @@ interface NewAuctionForm {
   incrementStep: string;
   ceilingPrice: string;
   durationSec: string;
+  extendThresholdSec: string;
+  extendDurationSec: string;
+}
+
+interface AuctionRulesForm {
+  startPrice: string;
+  incrementStep: string;
+  ceilingPrice: string;
+  startAt: string;
+  endAt: string;
+  extendThresholdSec: string;
+  extendDurationSec: string;
+}
+
+type NoticeTone = "success" | "outbid" | "extension" | "settled" | "info";
+
+interface LiveNotice {
+  message: string;
+  tone: NoticeTone;
 }
 
 const terminalStatuses = new Set(["Sold", "Passed", "Canceled"]);
@@ -82,7 +103,7 @@ function formatTime(value: string): string {
   }).format(new Date(value));
 }
 
-function remainingSeconds(
+function remainingMilliseconds(
   snapshot: AuctionSnapshotResponse,
   receivedAtMs = Date.now(),
   nowMs = Date.now()
@@ -90,7 +111,30 @@ function remainingSeconds(
   const end = new Date(snapshot.auction.endAt).getTime();
   const server = new Date(snapshot.serverTime).getTime();
   const correctedServerNow = server + Math.max(0, nowMs - receivedAtMs);
-  return Math.max(0, Math.ceil((end - correctedServerNow) / 1000));
+  return Math.max(0, end - correctedServerNow);
+}
+
+function formatRemainingTime(valueMs: number): string {
+  const totalTenths = Math.max(0, Math.ceil(valueMs / 100));
+  const minutes = Math.floor(totalTenths / 600);
+  const seconds = Math.floor((totalTenths % 600) / 10);
+  const tenths = totalTenths % 10;
+
+  if (minutes > 0) {
+    return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
+  }
+
+  return `${seconds}.${tenths}s`;
+}
+
+function toDatetimeLocalValue(value: string): string {
+  const date = new Date(value);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalValue(value: string): string {
+  return new Date(value).toISOString();
 }
 
 function getStatusLabel(status: AuctionDto["status"]): string {
@@ -270,6 +314,9 @@ function AdminAuctionsPage() {
                   开始
                 </button>
               ) : null}
+              {auction.status === "Scheduled" ? (
+                <a href={`/admin/auctions/${auction.id}/edit`}>编辑</a>
+              ) : null}
               {!terminalStatuses.has(auction.status) ? (
                 <button
                   aria-label={`取消竞拍 #${auction.id}`}
@@ -300,7 +347,9 @@ function NewAuctionPage() {
     startPrice: "99",
     incrementStep: "10",
     ceilingPrice: "129",
-    durationSec: "30"
+    durationSec: "30",
+    extendThresholdSec: "10",
+    extendDurationSec: "15"
   });
   const [created, setCreated] = useState<CreateAuctionResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -341,7 +390,9 @@ function NewAuctionPage() {
           incrementStep: Number(form.incrementStep),
           ceilingPrice: form.ceilingPrice.trim() ? Number(form.ceilingPrice) : null,
           startAt: new Date(now - 1_000).toISOString(),
-          endAt: new Date(now + durationMs).toISOString()
+          endAt: new Date(now + durationMs).toISOString(),
+          extendThresholdSec: Number(form.extendThresholdSec),
+          extendDurationSec: Number(form.extendDurationSec)
         }
       });
 
@@ -376,7 +427,7 @@ function NewAuctionPage() {
           <input value={form.title} onChange={(event) => updateField("title", event.target.value)} />
         </label>
         <label>
-          商品图片
+          商品图片 URL
           <input
             value={form.imageUrl}
             onChange={(event) => updateField("imageUrl", event.target.value)}
@@ -421,6 +472,22 @@ function NewAuctionPage() {
             onChange={(event) => updateField("durationSec", event.target.value)}
           />
         </label>
+        <label>
+          延时触发阈值秒
+          <input
+            inputMode="numeric"
+            value={form.extendThresholdSec}
+            onChange={(event) => updateField("extendThresholdSec", event.target.value)}
+          />
+        </label>
+        <label>
+          每次延长秒数
+          <input
+            inputMode="numeric"
+            value={form.extendDurationSec}
+            onChange={(event) => updateField("extendDurationSec", event.target.value)}
+          />
+        </label>
       </section>
       <div className="action-bar">
         <button disabled={busy || !demo} onClick={() => submit(false)}>
@@ -434,10 +501,185 @@ function NewAuctionPage() {
         <section className="result-panel">
           <strong>竞拍 #{created.auction.id}</strong>
           <StatusPill status={created.auction.status} />
+          <span className="muted">
+            延时 {created.auction.extendThresholdSec}s / +{created.auction.extendDurationSec}s
+          </span>
           <a href={`/live/${created.auction.roomId}`}>进入直播间</a>
           <a href="/admin/orders">订单列表</a>
         </section>
       ) : null}
+    </PageShell>
+  );
+}
+
+function EditAuctionPage({ auctionId }: { auctionId: number }) {
+  const [auction, setAuction] = useState<AuctionDto | null>(null);
+  const [form, setForm] = useState<AuctionRulesForm | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    api<AuctionDetailResponse>(`/api/auctions/${auctionId}`)
+      .then((value) => {
+        if (!active) {
+          return;
+        }
+        setAuction(value.auction);
+        setForm({
+          startPrice: String(value.auction.startPrice),
+          incrementStep: String(value.auction.incrementStep),
+          ceilingPrice: value.auction.ceilingPrice === null ? "" : String(value.auction.ceilingPrice),
+          startAt: toDatetimeLocalValue(value.auction.startAt),
+          endAt: toDatetimeLocalValue(value.auction.endAt),
+          extendThresholdSec: String(value.auction.extendThresholdSec),
+          extendDurationSec: String(value.auction.extendDurationSec)
+        });
+        setError(null);
+      })
+      .catch((err: Error) => {
+        if (active) {
+          setError(err.message);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [auctionId]);
+
+  function updateField(field: keyof AuctionRulesForm, value: string) {
+    setForm((current) => (current ? { ...current, [field]: value } : current));
+  }
+
+  async function submit() {
+    if (!form) {
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await api<UpdateAuctionResponse>(`/api/auctions/${auctionId}`, {
+        method: "PATCH",
+        body: {
+          startPrice: Number(form.startPrice),
+          incrementStep: Number(form.incrementStep),
+          ceilingPrice: form.ceilingPrice.trim() ? Number(form.ceilingPrice) : null,
+          startAt: fromDatetimeLocalValue(form.startAt),
+          endAt: fromDatetimeLocalValue(form.endAt),
+          extendThresholdSec: Number(form.extendThresholdSec),
+          extendDurationSec: Number(form.extendDurationSec)
+        }
+      });
+      setAuction(response.auction);
+      setForm({
+        startPrice: String(response.auction.startPrice),
+        incrementStep: String(response.auction.incrementStep),
+        ceilingPrice: response.auction.ceilingPrice === null ? "" : String(response.auction.ceilingPrice),
+        startAt: toDatetimeLocalValue(response.auction.startAt),
+        endAt: toDatetimeLocalValue(response.auction.endAt),
+        extendThresholdSec: String(response.auction.extendThresholdSec),
+        extendDurationSec: String(response.auction.extendDurationSec)
+      });
+      setNotice("规则已保存");
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <PageShell>
+      <section className="page-header">
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1>编辑竞拍规则</h1>
+        </div>
+        <a className="secondary-link" href="/admin/auctions">
+          返回列表
+        </a>
+      </section>
+      {error ? <div className="alert">{error}</div> : null}
+      {notice ? <div className="success">{notice}</div> : null}
+      {auction && auction.status !== "Scheduled" ? (
+        <div className="alert">只有未开始竞拍可以修改规则，当前状态为 {getStatusLabel(auction.status)}。</div>
+      ) : null}
+      {form ? (
+        <>
+          <section className="form-grid">
+            <label>
+              起拍价
+              <input
+                inputMode="decimal"
+                value={form.startPrice}
+                onChange={(event) => updateField("startPrice", event.target.value)}
+              />
+            </label>
+            <label>
+              加价幅度
+              <input
+                inputMode="decimal"
+                value={form.incrementStep}
+                onChange={(event) => updateField("incrementStep", event.target.value)}
+              />
+            </label>
+            <label>
+              封顶价
+              <input
+                inputMode="decimal"
+                value={form.ceilingPrice}
+                onChange={(event) => updateField("ceilingPrice", event.target.value)}
+              />
+            </label>
+            <label>
+              开始时间
+              <input
+                type="datetime-local"
+                value={form.startAt}
+                onChange={(event) => updateField("startAt", event.target.value)}
+              />
+            </label>
+            <label>
+              结束时间
+              <input
+                type="datetime-local"
+                value={form.endAt}
+                onChange={(event) => updateField("endAt", event.target.value)}
+              />
+            </label>
+            <label>
+              延时触发阈值秒
+              <input
+                inputMode="numeric"
+                value={form.extendThresholdSec}
+                onChange={(event) => updateField("extendThresholdSec", event.target.value)}
+              />
+            </label>
+            <label>
+              每次延长秒数
+              <input
+                inputMode="numeric"
+                value={form.extendDurationSec}
+                onChange={(event) => updateField("extendDurationSec", event.target.value)}
+              />
+            </label>
+          </section>
+          <div className="action-bar">
+            <button className="primary-button" disabled={busy || auction?.status !== "Scheduled"} onClick={submit}>
+              保存规则
+            </button>
+            <a className="secondary-link" href={`/live/${auction?.roomId ?? 1}?auctionId=${auctionId}`}>
+              查看直播间
+            </a>
+          </div>
+        </>
+      ) : (
+        <p className="empty">加载中</p>
+      )}
     </PageShell>
   );
 }
@@ -518,7 +760,7 @@ function UserPicker({
   );
 }
 
-function LiveRoomPage({ roomId }: { roomId: number }) {
+function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number | undefined }) {
   const { demo, error: demoError } = useDemoContext();
   const [auction, setAuction] = useState<AuctionDto | null>(null);
   const [snapshot, setSnapshot] = useState<AuctionSnapshotResponse | null>(null);
@@ -527,11 +769,15 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<LiveNotice | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("disconnected");
   const [onlineCount, setOnlineCount] = useState(0);
   const [clockMs, setClockMs] = useState(Date.now());
   const [reconnectTick, setReconnectTick] = useState(0);
+
+  const showNotice = useCallback((message: string, tone: NoticeTone = "success") => {
+    setNotice({ message, tone });
+  }, []);
 
   const applySnapshot = useCallback((value: AuctionSnapshotResponse) => {
     setSnapshot(value);
@@ -546,11 +792,24 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
   }, [demo, selectedUserId]);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setClockMs(Date.now()), 1_000);
+    const timer = window.setInterval(() => setClockMs(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, []);
 
   const loadAuction = useCallback(() => {
+    if (auctionId) {
+      api<AuctionDetailResponse>(`/api/auctions/${auctionId}`)
+        .then((value) => {
+          if (value.auction.roomId !== roomId) {
+            throw new Error(`竞拍 #${auctionId} 不属于直播间 ${roomId}`);
+          }
+          setAuction(value.auction);
+          setError(null);
+        })
+        .catch((err: Error) => setError(err.message));
+      return;
+    }
+
     api<AuctionListResponse>("/api/auctions")
       .then((value) => {
         const selected = selectAuctionForRoom(value.items, roomId);
@@ -561,7 +820,7 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
         setError(null);
       })
       .catch((err: Error) => setError(err.message));
-  }, [roomId]);
+  }, [auctionId, roomId]);
 
   const loadSnapshot = useCallback((auctionId: number) => {
     api<AuctionSnapshotResponse>(`/api/auctions/${auctionId}/snapshot`)
@@ -635,26 +894,36 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
       } else if (realtimeEvent.type === "ranking.updated") {
         setRanking(realtimeEvent.payload.ranking);
       } else if (realtimeEvent.type === "auction.extended") {
-        setNotice(`已自动延时到 ${formatTime(realtimeEvent.payload.newEndAt)}`);
+        showNotice(
+          `已自动延时 ${realtimeEvent.payload.extendDurationSec}s，到 ${formatTime(realtimeEvent.payload.newEndAt)}`,
+          "extension"
+        );
       } else if (realtimeEvent.type === "bid.accepted") {
         const ownBid = realtimeEvent.payload.userId === selectedUserId;
-        setNotice(
+        showNotice(
           ownBid
-            ? `出价成功 ${formatMoney(realtimeEvent.payload.amount)}`
-            : `有人出价 ${formatMoney(realtimeEvent.payload.amount)}`
+            ? `出价成功 ${formatMoney(realtimeEvent.payload.amount)}，领先中`
+            : `有人出价 ${formatMoney(realtimeEvent.payload.amount)}`,
+          ownBid ? "success" : "info"
         );
       } else if (realtimeEvent.type === "bid.rejected") {
         if (realtimeEvent.payload.userId === selectedUserId) {
           setError(realtimeEvent.payload.reason);
         }
       } else if (realtimeEvent.type === "order.paid") {
-        setNotice(`订单 #${realtimeEvent.payload.orderId} 已支付`);
+        showNotice(`订单 #${realtimeEvent.payload.orderId} 已支付`, "settled");
       } else if (realtimeEvent.type === "room.presence") {
         setOnlineCount(realtimeEvent.payload.onlineCount);
       } else if (realtimeEvent.type === "auction.canceled") {
-        setNotice("竞拍已取消");
+        showNotice("竞拍已取消", "settled");
       } else if (realtimeEvent.type === "auction.sold") {
-        setNotice(`竞拍成交 ${formatMoney(realtimeEvent.payload.amount)}`);
+        showNotice(`竞拍成交 ${formatMoney(realtimeEvent.payload.amount)}`, "settled");
+      } else if (realtimeEvent.type === "auction.passed") {
+        showNotice("竞拍已流拍，无人成交", "settled");
+      } else if (realtimeEvent.type === "user.outbid") {
+        if (realtimeEvent.payload.previousWinnerId === selectedUserId) {
+          showNotice(`已被超越，当前价 ${formatMoney(realtimeEvent.payload.amount)}`, "outbid");
+        }
       }
     }
 
@@ -667,6 +936,8 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
     socket.on("room.presence", handleRealtimeEvent);
     socket.on("auction.canceled", handleRealtimeEvent);
     socket.on("auction.sold", handleRealtimeEvent);
+    socket.on("auction.passed", handleRealtimeEvent);
+    socket.on("user.outbid", handleRealtimeEvent);
 
     socket.on("disconnect", () => {
       if (closedByEffect) {
@@ -686,7 +957,7 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
       window.clearTimeout(reconnectTimer);
       socket.disconnect();
     };
-  }, [auction?.id, applySnapshot, demo, reconnectTick, roomId, selectedUserId]);
+  }, [auction?.id, applySnapshot, demo, reconnectTick, roomId, selectedUserId, showNotice]);
 
   async function placeBid() {
     if (!snapshot || !selectedUserId || snapshot.nextBidAmount === null) {
@@ -707,7 +978,7 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
       });
       applySnapshot(response.snapshot);
       setAuction(response.auction);
-      setNotice(`出价成功 ${formatMoney(response.bid.amount)}`);
+      showNotice(`出价成功 ${formatMoney(response.bid.amount)}，领先中`);
     } catch (err) {
       setError((err as Error).message);
       if (snapshot) {
@@ -729,6 +1000,13 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
     selectedUserId !== null;
   const isWinner = snapshot?.order?.buyerId === selectedUserId;
   const roomMediaUrl = snapshot?.room.videoUrl ?? demo?.room.videoUrl ?? "";
+  const remainingMsValue = snapshot ? remainingMilliseconds(snapshot, snapshotReceivedAt, clockMs) : 0;
+  const isFinalCountdown = snapshot?.auction.status === "Running" && remainingMsValue <= 10_000;
+  const currentUserLeading =
+    snapshot?.auction.status === "Running" &&
+    snapshot.currentWinner?.id === selectedUserId &&
+    selectedUserId !== null;
+  const isPassedWithoutOrder = snapshot?.auction.status === "Passed" && snapshot.order === null;
 
   return (
     <PageShell>
@@ -766,18 +1044,19 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
                   <StatusPill status={snapshot.auction.status} />
                 </div>
               </div>
-              <div className="price-board">
+              <div className={`price-board ${currentUserLeading ? "leading" : ""}`}>
                 <span>当前价</span>
                 <strong data-testid="current-price">{formatMoney(snapshot.currentPrice)}</strong>
               </div>
+              {currentUserLeading ? <div className="leader-strip">领先中</div> : null}
               <div className="metric-grid" data-testid="metric-grid">
                 <div>
                   <span>下一口价</span>
                   <strong>{formatMoney(snapshot.nextBidAmount)}</strong>
                 </div>
-                <div>
+                <div className={isFinalCountdown ? "countdown-hot" : ""}>
                   <span>倒计时</span>
-                  <strong>{remainingSeconds(snapshot, snapshotReceivedAt, clockMs)}s</strong>
+                  <strong>{formatRemainingTime(remainingMsValue)}</strong>
                 </div>
                 <div>
                   <span>领先者</span>
@@ -787,16 +1066,25 @@ function LiveRoomPage({ roomId }: { roomId: number }) {
                   <span>当前用户</span>
                   <strong>{currentUser?.nickname ?? "-"}</strong>
                 </div>
+                <div>
+                  <span>延时规则</span>
+                  <strong>{snapshot.auction.extendThresholdSec}s / +{snapshot.auction.extendDurationSec}s</strong>
+                </div>
               </div>
               <button className="bid-button" data-testid="bid-button" disabled={!canBid} onClick={placeBid}>
                 {snapshot.nextBidAmount === null ? "不可出价" : `出价 ${formatMoney(snapshot.nextBidAmount)}`}
               </button>
-              {notice ? <div className="success" data-testid="notice">{notice}</div> : null}
+              {notice ? <div className={`notice ${notice.tone}`} data-testid="notice">{notice.message}</div> : null}
               {snapshot.order ? (
                 <div className="result-panel compact">
                   <strong>{snapshot.auction.status === "Sold" ? "成交" : "结果"}</strong>
                   <span>{formatMoney(snapshot.order.amount)}</span>
                   {isWinner ? <a href={`/pay/${snapshot.order.id}`}>去支付</a> : <span>未成交</span>}
+                </div>
+              ) : isPassedWithoutOrder ? (
+                <div className="result-panel compact passed-result">
+                  <strong>竞拍已流拍，无人成交</strong>
+                  <span>本场没有成交订单</span>
                 </div>
               ) : null}
               <div className="bid-list">
@@ -981,6 +1269,11 @@ export function App() {
     return <NewAuctionPage />;
   }
 
+  if (segments[0] === "admin" && segments[1] === "auctions" && segments[3] === "edit") {
+    const auctionId = Number(segments[2]);
+    return <EditAuctionPage auctionId={Number.isInteger(auctionId) && auctionId > 0 ? auctionId : 1} />;
+  }
+
   if (segments[0] === "admin" && segments[1] === "orders") {
     return <AdminOrdersPage />;
   }
@@ -991,7 +1284,13 @@ export function App() {
 
   if (segments[0] === "live") {
     const roomId = Number(segments[1]);
-    return <LiveRoomPage roomId={Number.isInteger(roomId) && roomId > 0 ? roomId : 1} />;
+    const auctionId = Number(new URLSearchParams(window.location.search).get("auctionId"));
+    return (
+      <LiveRoomPage
+        roomId={Number.isInteger(roomId) && roomId > 0 ? roomId : 1}
+        auctionId={Number.isInteger(auctionId) && auctionId > 0 ? auctionId : undefined}
+      />
+    );
   }
 
   if (segments[0] === "pay") {

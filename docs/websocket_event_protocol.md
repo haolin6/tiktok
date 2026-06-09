@@ -66,6 +66,21 @@ All server events are emitted on their event names, with this event object:
 
 ## 关键 Payload
 
+`bid.accepted`:
+
+```json
+{
+  "auctionId": 41,
+  "bidId": 100,
+  "userId": 3,
+  "amount": 119,
+  "requestId": "bid-2",
+  "previousWinnerId": 2
+}
+```
+
+`previousWinnerId` 为本次出价前的领先者。第一次有效出价时为 `null`。该字段与 `auction_events` 中 `bid.accepted.payload_json.previousWinnerId` 保持一致。
+
 `ranking.updated`:
 
 ```json
@@ -104,12 +119,35 @@ All server events are emitted on their event names, with this event object:
 }
 ```
 
+`auction.passed`:
+
+```json
+{
+  "auctionId": 41,
+  "reason": "ended"
+}
+```
+
+`user.outbid`:
+
+```json
+{
+  "auctionId": 41,
+  "previousWinnerId": 2,
+  "newWinnerId": 3,
+  "amount": 119
+}
+```
+
+`user.outbid` 只发送到 `user:{previousWinnerId}`。新领先者、非 previous winner、其他房间用户和未完成 `room.join` 的 socket 不应收到该事件。
+
 ## 房间隔离
 
 - `room.join` validates an active room and a bidder user.
 - `auction.subscribe` requires a successful `room.join`.
 - `auction.subscribe` validates `auction.roomId === socket.roomId`.
 - `bid.place` validates the same room match before calling the shared bid service.
+- `user.outbid` 使用用户定向房间发送，不走整场竞拍广播。
 
 ## 重连恢复
 

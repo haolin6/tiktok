@@ -4,6 +4,8 @@
 
 `npm run demo:concurrency` 证明并发出价不会重复涨价、重复落 bid 或重复生成订单。
 
+WebSocket 广播 fanout 的代表性输出记录在 `docs/performance_evidence.md`。两者口径不同：本文件证明出价一致性，fanout 脚本证明本机多连接广播送达；当前版本不把这些结果夸大为线上 1000+ 在线压测。
+
 脚本会创建独立商品、竞拍和带固定前缀的测试用户，不清空业务表，不污染手工演示竞拍。
 
 ## 四种模式

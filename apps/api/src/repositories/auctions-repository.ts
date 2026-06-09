@@ -57,6 +57,16 @@ export interface InsertAuctionInput {
   createdBy: number;
 }
 
+export interface UpdateAuctionRulesInput {
+  startPrice: number;
+  incrementStep: number;
+  ceilingPrice: number | null;
+  startAt: Date;
+  endAt: Date;
+  extendThresholdSec: number;
+  extendDurationSec: number;
+}
+
 export async function insertAuction(
   db: DbExecutor,
   input: InsertAuctionInput
@@ -124,6 +134,44 @@ export async function findAuctionByIdForUpdate(
   }
 
   return mapAuction(row);
+}
+
+export async function updateScheduledAuctionRules(
+  db: DbExecutor,
+  auctionId: number,
+  input: UpdateAuctionRulesInput
+): Promise<AuctionDto> {
+  const [result] = await db.execute<ResultSetHeader>(
+    `UPDATE auctions
+     SET start_price = ?,
+         increment_step = ?,
+         ceiling_price = ?,
+         start_at = ?,
+         end_at = ?,
+         extend_threshold_sec = ?,
+         extend_duration_sec = ?,
+         current_price = ?,
+         version = version + 1
+     WHERE id = ?
+       AND status = 'Scheduled'`,
+    [
+      input.startPrice,
+      input.incrementStep,
+      input.ceilingPrice,
+      input.startAt,
+      input.endAt,
+      input.extendThresholdSec,
+      input.extendDurationSec,
+      input.startPrice,
+      auctionId
+    ]
+  );
+
+  if (result.affectedRows !== 1) {
+    throw conflict("Auction status changed while updating scheduled rules.");
+  }
+
+  return findAuctionById(db, auctionId);
 }
 
 export async function listAuctions(db: DbExecutor): Promise<AuctionDto[]> {

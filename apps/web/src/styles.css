@@ -287,7 +287,8 @@ textarea:focus {
 }
 
 .alert,
-.success {
+.success,
+.notice {
   margin: 12px 0;
   border-radius: 8px;
   padding: 11px 12px;
@@ -301,10 +302,35 @@ textarea:focus {
   color: #991b1b;
 }
 
-.success {
+.success,
+.notice.success {
   border: 1px solid #bbf7d0;
   background: #f0fdf4;
   color: #166534;
+}
+
+.notice.info {
+  border: 1px solid #bae6fd;
+  background: #f0f9ff;
+  color: #075985;
+}
+
+.notice.outbid {
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.notice.extension {
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.notice.settled {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #334155;
 }
 
 .empty {
@@ -498,9 +524,24 @@ textarea:focus {
 }
 
 .price-board strong {
+  display: inline-block;
   color: #b91c1c;
   font-size: 32px;
   line-height: 1.1;
+}
+
+.price-board.leading strong {
+  animation: pricePulse 700ms ease-out;
+}
+
+.leader-strip {
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #166534;
+  padding: 9px 11px;
+  font-size: 14px;
+  font-weight: 850;
 }
 
 .metric-grid {
@@ -523,6 +564,24 @@ textarea:focus {
   color: #111827;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.metric-grid .countdown-hot {
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+
+.metric-grid .countdown-hot strong {
+  color: #b91c1c;
+}
+
+.passed-result {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.passed-result strong {
+  color: #334155;
 }
 
 .bid-button {
@@ -590,6 +649,20 @@ textarea:focus {
 
 .split-panels .data-panel {
   padding: 16px;
+}
+
+@keyframes pricePulse {
+  0% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(1.04);
+  }
+
+  100% {
+    transform: scale(1);
+  }
 }
 
 @media (max-width: 840px) {

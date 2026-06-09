@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-实时竞拍大师是一个面向抖音电商直播场景的实时竞拍全栈系统。当前版本完成了后台发布竞拍、用户直播间出价、WebSocket 实时同步、成交订单、模拟支付、管理端取消和并发一致性验证。
+实时竞拍大师是一个面向抖音电商直播场景的实时竞拍全栈系统。当前版本完成了后台发布竞拍、未开始竞拍规则编辑、用户直播间出价、WebSocket 实时同步、成交/流拍展示、订单模拟支付、管理端取消、并发一致性验证和本机 WebSocket fanout 证明。
 
 直播画面使用本地固定素材模拟，业务重点放在竞拍状态机、房间级实时同步、订单闭环和高并发出价一致性。
 
@@ -29,17 +29,19 @@
 | 2026-06-03 | 节点 2：业务主链路 | 后台创建竞拍、用户出价、自动成交/流拍、订单生成、模拟支付、后台/用户订单页面 | `/admin/auctions/new`、`/live/:roomId`、`/pay/:orderId`、`/admin/orders`、`/me/orders` |
 | 2026-06-06 | 节点 3：实时和并发能力 | Socket.IO 房间隔离、重连后 snapshot 恢复、Redis lock、Redis 幂等 key、四种并发脚本模式、API/E2E 测试 | `apps/api/src/realtime/realtime-hub.ts`、`apps/api/src/services/bid-coordinator.ts`、`apps/api/src/scripts/simulate-concurrency.ts`、`apps/web/src/test/live-room.e2e.ts` |
 | 2026-06-09 | 最终补齐 | 根 README、管理端取消按钮、三分钟演示视频脚本、直播间展示图替换、GitHub 上传 | `README.md`、`apps/web/src/App.tsx`、`docs/demo_video_script.md`、`apps/web/public/demo/live-room-audience.png`、`https://github.com/haolin6/tiktok` |
+| 2026-06-10 | 反馈修补 | `user.outbid` 定向提醒、流拍前端展示、发布页延时参数、未开始规则编辑、fanout 脚本、AI/验收/性能/内测文档 | `docs/final_acceptance_log.md`、`docs/performance_evidence.md`、`docs/ai_usage_evidence.md`、`docs/internal_review_notes.md` |
 
 ## 已完成能力
 
 - 后台发布竞拍：创建商品、设置起拍价、加价幅度、竞拍时长、封顶价和自动延时参数。
-- 后台竞拍管理：查看竞拍列表，启动竞拍，取消 `Scheduled` 或 `Running` 状态竞拍。
+- 后台竞拍管理：查看竞拍列表，启动竞拍，取消 `Scheduled` 或 `Running` 状态竞拍，编辑 `Scheduled` 竞拍规则。
 - 用户直播间：展示直播间素材、竞拍商品、当前价、下一口价、倒计时、领先者、最近出价和排行榜。
-- 实时同步：通过 Socket.IO 广播 `auction.snapshot`、`bid.accepted`、`bid.rejected`、`ranking.updated`、`auction.extended`、`auction.sold`、`auction.canceled`、`order.paid`。
+- 实时同步：通过 Socket.IO 同步 `auction.snapshot`、`bid.accepted`、`bid.rejected`、`ranking.updated`、`auction.extended`、`auction.sold`、`auction.passed`、`auction.canceled`、`order.paid`、`user.outbid`、`room.presence`。
 - 状态机：支持 `Draft`、`Scheduled`、`Running`、`Sold`、`Passed`、`Canceled` 六个状态。
-- 成交订单：封顶成交或到期成交后生成订单，赢家进入模拟支付页，后台和用户端均可查看订单。
+- 成交/流拍：封顶成交或到期有赢家时生成订单，赢家进入模拟支付页；到期无有效出价时流拍且无支付入口。
 - 并发一致性：Redis lock 控制关键区，Redis 幂等 key 处理重复请求，MySQL 事务和唯一约束兜底。
-- 测试覆盖：Vitest 覆盖 shared 类型和 API 集成链路，Playwright 覆盖用户端双页面同步和管理端取消。
+- WebSocket fanout：本机脚本已验证 100/200 客户端订阅后均收到真实出价触发的 `bid.accepted` 广播。
+- 测试覆盖：Vitest 覆盖 shared 类型和 API 集成链路，Playwright 覆盖用户端双页面同步、被超越提示、流拍展示、发布延时参数、编辑规则和管理端取消。
 
 ## AI 使用说明
 
@@ -67,18 +69,30 @@ AI 协作方式：
 
 ## 验收状态
 
-上传 GitHub 前完成的检查：
+2026-06-10 反馈修补后完成的检查：
 
 ```bash
+npm run check:env
+npm run db:mysql:ping
+npm run redis:ping
 npm run build
 npm run test
+npm run test:e2e
+npm run demo:concurrency -- --mode=unique
+npm run demo:concurrency -- --mode=duplicate-accepted
+npm run demo:concurrency -- --mode=duplicate-rejected
+npm run demo:concurrency -- --mode=lock-busy
+npm run demo:realtime-fanout -- --clients=100
+npm run demo:realtime-fanout -- --clients=200
 ```
 
 结果：
 
 - `npm run build` 通过，shared、api、web 均完成 TypeScript/Vite 构建。
-- `npm run test` 通过，shared 5 个测试、API 12 个集成测试全部通过。
-- `npm run test:e2e` 在上传前重跑时被本机已有 `3000` 服务占用阻断；管理端取消按钮实现后已通过 Playwright E2E 验收。
+- `npm run test` 通过，shared 5 个测试、API 14 个集成测试全部通过。
+- `npm run test:e2e` 通过，6 个 Playwright 测试全部通过。执行前已释放旧的 `3000/4000` dev server，避免 `reuseExistingServer=false` 的端口占用阻断。
+- 四种 `demo:concurrency` 均通过。
+- `demo:realtime-fanout` 100/200 客户端均通过。
 - 密钥扫描未发现真实 `ark-...`、GitHub token 或个人凭据；`.env` 未进入仓库。
 - GitHub 仓库已上传到 `https://github.com/haolin6/tiktok`。
 
@@ -90,7 +104,10 @@ npm run test
 - 真实支付、物流和退款。
 - 完整登录鉴权、多角色权限和接口网关。
 - 复杂 BI 数据看板。
+- 线上 Demo 部署。
 - 线上千级或 1000+ 用户压测。
 - 独立 `/admin/auctions/:id` 详情页。
+- 演示视频飞书外部访问权限尚待用户确认，备用公开视频链接缺失。
+- 业务运行时大模型 API。
 
 这些内容不属于当前提交版本的已完成能力。

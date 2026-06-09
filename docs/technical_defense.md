@@ -16,7 +16,7 @@ flowchart LR
   Service --> Redis["Redis<br/>lock + idempotency + presence"]
   Service --> MySQL["MySQL<br/>transactions + unique keys"]
   Service --> Events["auction_events"]
-  Demo["simulate-concurrency.ts"] --> Service
+  Demo["simulate-concurrency.ts<br/>simulate-realtime-fanout.ts"] --> Service
 ```
 
 前端负责后台、直播间、订单和模拟支付页面；Fastify 提供 HTTP API；Socket.IO 负责房间级实时事件；Redis 负责短期锁、幂等和在线状态；MySQL 是最终事实来源；并发脚本复用业务服务验证一致性。
@@ -25,9 +25,10 @@ flowchart LR
 
 | 模块 | 路径/接口 | 完成状态 |
 |---|---|---|
-| 后台发布竞拍 | `/admin/auctions/new` | 已完成 |
-| 后台竞拍列表 | `/admin/auctions` | 已完成，含启动和取消 |
-| 用户直播间 | `/live/:roomId` | 已完成，含双用户实时同步 |
+| 后台发布竞拍 | `/admin/auctions/new` | 已完成，含自动延时参数 |
+| 后台竞拍列表 | `/admin/auctions` | 已完成，含启动、取消和 Scheduled 编辑入口 |
+| 未开始竞拍规则编辑 | `/admin/auctions/:id/edit`、`PATCH /api/auctions/:id` | 2026-06-10 修补完成，只允许 `Scheduled` |
+| 用户直播间 | `/live/:roomId`、`/live/:roomId?auctionId=<id>` | 已完成，含双用户实时同步、被超越提醒、成交/流拍结果 |
 | 模拟支付 | `/pay/:orderId` | 已完成 |
 | 后台订单 | `/admin/orders` | 已完成 |
 | 用户订单历史 | `/me/orders` | 已完成 |
@@ -97,6 +98,12 @@ stateDiagram-v2
 - `user.outbid`
 - `room.presence`
 
+2026-06-10 修补后：
+
+- `bid.accepted` payload 带 `previousWinnerId`，与 MySQL `auction_events` 中的 `bid.accepted.payload_json.previousWinnerId` 对齐。
+- `user.outbid` 只定向给 `user:{previousWinnerId}`，前端在被超越用户页面展示提醒。
+- `auction.passed` 在直播间展示“竞拍已流拍，无人成交”，且不显示支付入口。
+
 房间隔离：
 
 - `room.join` 校验有效 room 和 bidder 用户。
@@ -119,6 +126,8 @@ npm run demo:concurrency -- --mode=unique
 npm run demo:concurrency -- --mode=duplicate-accepted
 npm run demo:concurrency -- --mode=duplicate-rejected
 npm run demo:concurrency -- --mode=lock-busy
+npm run demo:realtime-fanout -- --clients=100
+npm run demo:realtime-fanout -- --clients=200
 ```
 
 核心结果口径：
@@ -128,6 +137,8 @@ npm run demo:concurrency -- --mode=lock-busy
 - `orderCount = 1`
 - `acceptedBidRows = accepted`
 - `rejectedBidRows = rejected`
+
+`demo:realtime-fanout` 自启动本机 API 和 Socket.IO hub，通过真实 HTTP 出价触发广播。本机代表性结果：100/100、200/200 客户端收到 `bid.accepted`，详见 `docs/performance_evidence.md`。该证据不等同于线上 1000+ 在线压测。
 
 ## AI 使用
 
@@ -159,7 +170,7 @@ AI 参与内容：
 
 ## 当前边界
 
-当前提交版本未接入真实直播推流、真实支付、完整登录鉴权、复杂数据看板、线上千级压测和独立竞拍详情页。
+当前提交版本未接入真实直播推流、真实支付、完整登录鉴权、复杂数据看板、线上千级压测、线上 Demo 和运行时大模型 API。飞书演示视频外部访问权限尚待用户确认。
 
 ## 答辩问答
 

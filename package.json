@@ -20,6 +20,7 @@
     "db:migrate": "npm run db:migrate -w @live-auction/api",
     "db:seed": "npm run db:seed -w @live-auction/api",
     "demo:concurrency": "npm run demo:concurrency -w @live-auction/api --",
+    "demo:realtime-fanout": "npm run demo:realtime-fanout -w @live-auction/api --",
     "db:mysql:ping": "/opt/homebrew/opt/mysql@8.0/bin/mysqladmin ping -h 127.0.0.1 -P 3306 -u root",
     "redis:ping": "/opt/homebrew/bin/redis-cli -h 127.0.0.1 -p 6379 ping"
   },

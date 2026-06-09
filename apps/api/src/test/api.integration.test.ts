@@ -12,6 +12,7 @@ import type {
   MockPayOrderResponse,
   OrderListResponse,
   PlaceBidResponse,
+  UpdateAuctionResponse,
   UserOrderListResponse
 } from "@live-auction/shared";
 import { createApp } from "../app.js";
@@ -329,6 +330,165 @@ describe("node 1 API integration", () => {
     expect(Number(eventRows[0]?.count ?? 0)).toBe(2);
   });
 
+  it("updates only Scheduled auction rules and rejects invalid or terminal updates", async () => {
+    const uniqueSuffix = `p0-update-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+    const productBody = await createProduct(app, `P0规则编辑商品 ${uniqueSuffix}`);
+    const auctionBody = await createAuction(app, roomId, productBody.product.id, {
+      startPrice: 100,
+      incrementStep: 10,
+      ceilingPrice: 200
+    });
+    const startAt = new Date(Date.now() + 30_000).toISOString();
+    const endAt = new Date(Date.now() + 120_000).toISOString();
+
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${auctionBody.auction.id}`,
+      payload: {
+        startPrice: 120,
+        incrementStep: 15,
+        ceilingPrice: null,
+        startAt,
+        endAt,
+        extendThresholdSec: 7,
+        extendDurationSec: 12
+      }
+    });
+    expect(updateResponse.statusCode).toBe(200);
+    const updateBody = updateResponse.json<UpdateAuctionResponse>();
+    expect(updateBody.auction.status).toBe("Scheduled");
+    expect(updateBody.auction.startPrice).toBe(120);
+    expect(updateBody.auction.currentPrice).toBe(120);
+    expect(updateBody.auction.incrementStep).toBe(15);
+    expect(updateBody.auction.ceilingPrice).toBeNull();
+    expect(updateBody.auction.extendThresholdSec).toBe(7);
+    expect(updateBody.auction.extendDurationSec).toBe(12);
+    expect(updateBody.auction.version).toBe(auctionBody.auction.version + 1);
+
+    const updatedState = await readAuctionState(pool, auctionBody.auction.id);
+    expect(Number(updatedState.current_price)).toBe(120);
+    const updatePayload = await readLatestEventPayload(pool, auctionBody.auction.id, "auction.updated");
+    expect(updatePayload).toMatchObject({
+      auctionId: auctionBody.auction.id,
+      previous: {
+        startPrice: 100,
+        incrementStep: 10,
+        ceilingPrice: 200
+      },
+      current: {
+        startPrice: 120,
+        incrementStep: 15,
+        ceilingPrice: null,
+        extendThresholdSec: 7,
+        extendDurationSec: 12
+      }
+    });
+
+    const invalidCeilingResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${auctionBody.auction.id}`,
+      payload: {
+        startPrice: 150,
+        ceilingPrice: 100
+      }
+    });
+    expect(invalidCeilingResponse.statusCode).toBe(400);
+
+    const invalidTimeResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${auctionBody.auction.id}`,
+      payload: {
+        startAt: new Date(Date.now() + 120_000).toISOString(),
+        endAt: new Date(Date.now() + 30_000).toISOString()
+      }
+    });
+    expect(invalidTimeResponse.statusCode).toBe(400);
+
+    const emptyBodyResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${auctionBody.auction.id}`,
+      payload: {}
+    });
+    expect(emptyBodyResponse.statusCode).toBe(400);
+
+    const unknownFieldResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${auctionBody.auction.id}`,
+      payload: {
+        title: "should not be accepted"
+      }
+    });
+    expect(unknownFieldResponse.statusCode).toBe(400);
+
+    const runningProduct = await createProduct(app, `P0 Running不可编辑商品 ${uniqueSuffix}`);
+    const runningAuction = await createAuction(app, roomId, runningProduct.product.id);
+    await startAuction(app, runningAuction.auction.id);
+    const runningUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${runningAuction.auction.id}`,
+      payload: { startPrice: 150 }
+    });
+    expect(runningUpdateResponse.statusCode).toBe(409);
+
+    const soldProduct = await createProduct(app, `P0 Sold不可编辑商品 ${uniqueSuffix}`);
+    const soldAuction = await createAuction(app, roomId, soldProduct.product.id, {
+      startPrice: 99,
+      incrementStep: 10,
+      ceilingPrice: 109
+    });
+    await startAuction(app, soldAuction.auction.id);
+    const soldBidResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${soldAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 109,
+        requestId: `${uniqueSuffix}-sold`
+      }
+    });
+    expect(soldBidResponse.statusCode).toBe(200);
+    const soldUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${soldAuction.auction.id}`,
+      payload: { startPrice: 150 }
+    });
+    expect(soldUpdateResponse.statusCode).toBe(409);
+
+    const passedProduct = await createProduct(app, `P0 Passed不可编辑商品 ${uniqueSuffix}`);
+    const passedAuction = await createAuction(app, roomId, passedProduct.product.id);
+    await startAuction(app, passedAuction.auction.id);
+    await pool.execute("UPDATE auctions SET end_at = DATE_SUB(NOW(3), INTERVAL 1 SECOND) WHERE id = ?", [
+      passedAuction.auction.id
+    ]);
+    const passedSnapshotResponse = await app.inject({
+      method: "GET",
+      url: `/api/auctions/${passedAuction.auction.id}/snapshot`
+    });
+    expect(passedSnapshotResponse.statusCode).toBe(200);
+    expect(passedSnapshotResponse.json<AuctionSnapshotResponse>().auction.status).toBe("Passed");
+    const passedUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${passedAuction.auction.id}`,
+      payload: { startPrice: 150 }
+    });
+    expect(passedUpdateResponse.statusCode).toBe(409);
+
+    const canceledProduct = await createProduct(app, `P0 Canceled不可编辑商品 ${uniqueSuffix}`);
+    const canceledAuction = await createAuction(app, roomId, canceledProduct.product.id);
+    const cancelResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${canceledAuction.auction.id}/cancel`,
+      payload: { reason: "p0 update boundary" }
+    });
+    expect(cancelResponse.statusCode).toBe(200);
+    const canceledUpdateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/auctions/${canceledAuction.auction.id}`,
+      payload: { startPrice: 150 }
+    });
+    expect(canceledUpdateResponse.statusCode).toBe(409);
+  });
+
   it("starts an auction, accepts sequential bids, sells at the ceiling, creates an order, and mock pays it", async () => {
     const uniqueSuffix = `node2-ceiling-${Date.now()}-${Math.round(Math.random() * 100000)}`;
     const productBody = await createProduct(app, `节点2封顶测试商品 ${uniqueSuffix}`);
@@ -356,6 +516,7 @@ describe("node 1 API integration", () => {
     expect(bidABody.auction.currentPrice).toBe(109);
     expect(bidABody.auction.currentWinnerId).toBe(bidderAId);
     expect(bidABody.snapshot.currentWinner?.id).toBe(bidderAId);
+    expect(bidABody.previousWinnerId).toBeNull();
 
     const bidBResponse = await app.inject({
       method: "POST",
@@ -372,6 +533,7 @@ describe("node 1 API integration", () => {
     expect(bidBBody.auction.currentPrice).toBe(119);
     expect(bidBBody.auction.currentWinnerId).toBe(bidderBId);
     expect(bidBBody.snapshot.order?.buyerId).toBe(bidderBId);
+    expect(bidBBody.previousWinnerId).toBe(bidderAId);
 
     const [auctionRows] = await pool.execute<IdRow[]>(
       "SELECT id FROM auctions WHERE id = ? AND status = 'Sold' AND current_winner_id = ? LIMIT 1",
@@ -702,6 +864,102 @@ describe("node 1 API integration", () => {
     } finally {
       socketA.close();
       socketB.close();
+      unjoinedSocket.close();
+    }
+  });
+
+  it("sends user.outbid only to the previous winner and keeps event payloads consistent", async () => {
+    const uniqueSuffix = `p0-outbid-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+    const productBody = await createProduct(app, `P0被超越提醒商品 ${uniqueSuffix}`);
+    const auctionBody = await createAuction(app, roomId, productBody.product.id, {
+      startPrice: 99,
+      incrementStep: 10,
+      ceilingPrice: null
+    });
+    await startAuction(app, auctionBody.auction.id);
+    const otherRoomId = await createSecondRoom(pool, uniqueSuffix);
+
+    const socketA = await openSocket(realtimeUrl);
+    const socketB = await openSocket(realtimeUrl);
+    const socketC = await openSocket(realtimeUrl);
+    const otherRoomSocket = await openSocket(realtimeUrl);
+    const unjoinedSocket = await openSocket(realtimeUrl);
+
+    try {
+      await joinAndSubscribe(socketA, roomId, bidderAId, auctionBody.auction.id);
+      await joinAndSubscribe(socketB, roomId, bidderBId, auctionBody.auction.id);
+      await joinAndSubscribe(socketC, roomId, bidderCId, auctionBody.auction.id);
+      expect((await sendRealtime(otherRoomSocket, "room.join", { roomId: otherRoomId, userId: bidderCId })).ok).toBe(
+        true
+      );
+
+      const firstBidAck = await sendRealtime(socketA, "bid.place", {
+        auctionId: auctionBody.auction.id,
+        amount: 109,
+        requestId: `${uniqueSuffix}-a`
+      });
+      expect(firstBidAck.ok).toBe(true);
+      expect((firstBidAck.payload as PlaceBidResponse).previousWinnerId).toBeNull();
+
+      const outbidForA = waitForRealtimeEvent(socketA, "user.outbid", (packet) => {
+        return (
+          packet.data.payload.auctionId === auctionBody.auction.id &&
+          packet.data.payload.previousWinnerId === bidderAId &&
+          packet.data.payload.newWinnerId === bidderBId &&
+          packet.data.payload.amount === 119
+        );
+      });
+      const acceptedForC = waitForRealtimeEvent(socketC, "bid.accepted", (packet) => {
+        return (
+          packet.data.payload.auctionId === auctionBody.auction.id &&
+          packet.data.payload.userId === bidderBId &&
+          packet.data.payload.previousWinnerId === bidderAId
+        );
+      });
+      const noOutbidForB = expectNoRealtimeEvent(socketB, "user.outbid", (packet) => {
+        return packet.data.payload.auctionId === auctionBody.auction.id;
+      });
+      const noOutbidForC = expectNoRealtimeEvent(socketC, "user.outbid", (packet) => {
+        return packet.data.payload.auctionId === auctionBody.auction.id;
+      });
+      const noOutbidForOtherRoom = expectNoRealtimeEvent(otherRoomSocket, "user.outbid", (packet) => {
+        return packet.data.payload.auctionId === auctionBody.auction.id;
+      });
+      const noOutbidForUnjoined = expectNoRealtimeEvent(unjoinedSocket, "user.outbid", (packet) => {
+        return packet.data.payload.auctionId === auctionBody.auction.id;
+      });
+
+      const secondBidAck = await sendRealtime(socketB, "bid.place", {
+        auctionId: auctionBody.auction.id,
+        amount: 119,
+        requestId: `${uniqueSuffix}-b`
+      });
+      expect(secondBidAck.ok).toBe(true);
+      expect((secondBidAck.payload as PlaceBidResponse).previousWinnerId).toBe(bidderAId);
+
+      const outbidEvent = await outbidForA;
+      expect(outbidEvent.data.payload).toMatchObject({
+        auctionId: auctionBody.auction.id,
+        previousWinnerId: bidderAId,
+        newWinnerId: bidderBId,
+        amount: 119
+      });
+      await acceptedForC;
+      await Promise.all([noOutbidForB, noOutbidForC, noOutbidForOtherRoom, noOutbidForUnjoined]);
+
+      const acceptedPayload = await readLatestEventPayload(pool, auctionBody.auction.id, "bid.accepted");
+      expect(acceptedPayload).toMatchObject({
+        auctionId: auctionBody.auction.id,
+        userId: bidderBId,
+        amount: 119,
+        previousWinnerId: bidderAId
+      });
+      expect(await countEvents(pool, auctionBody.auction.id, "bid.accepted")).toBe(2);
+    } finally {
+      socketA.close();
+      socketB.close();
+      socketC.close();
+      otherRoomSocket.close();
       unjoinedSocket.close();
     }
   });

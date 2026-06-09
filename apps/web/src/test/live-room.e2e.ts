@@ -1,5 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type {
+  AuctionDetailResponse,
   AuctionListResponse,
   CreateAuctionResponse,
   CreateProductResponse,
@@ -29,6 +30,23 @@ async function createRunningAuction(
   roomId: number,
   title: string
 ): Promise<CreateAuctionResponse> {
+  return createAuctionFixture(request, roomId, title, { start: true });
+}
+
+async function createAuctionFixture(
+  request: APIRequestContext,
+  roomId: number,
+  title: string,
+  options: Partial<{
+    start: boolean;
+    startPrice: number;
+    incrementStep: number;
+    ceilingPrice: number | null;
+    endMsFromNow: number;
+    extendThresholdSec: number;
+    extendDurationSec: number;
+  }> = {}
+): Promise<CreateAuctionResponse> {
   const product = await apiPost<CreateProductResponse>(request, "/api/products", {
     title,
     imageUrl: "https://example.com/e2e-product.png",
@@ -38,14 +56,18 @@ async function createRunningAuction(
   const auction = await apiPost<CreateAuctionResponse>(request, "/api/auctions", {
     roomId,
     productId: product.product.id,
-    startPrice: 99,
-    incrementStep: 10,
-    ceilingPrice: 119,
+    startPrice: options.startPrice ?? 99,
+    incrementStep: options.incrementStep ?? 10,
+    ceilingPrice: options.ceilingPrice === undefined ? 119 : options.ceilingPrice,
     startAt: new Date(now - 1_000).toISOString(),
-    endAt: new Date(now + 60_000).toISOString(),
-    extendThresholdSec: 10,
-    extendDurationSec: 15
+    endAt: new Date(now + (options.endMsFromNow ?? 60_000)).toISOString(),
+    extendThresholdSec: options.extendThresholdSec ?? 10,
+    extendDurationSec: options.extendDurationSec ?? 15
   });
+
+  if (!options.start) {
+    return auction;
+  }
 
   return apiPost<CreateAuctionResponse>(request, `/api/auctions/${auction.auction.id}/start`);
 }
@@ -54,9 +76,10 @@ async function openLiveRoom(
   page: Page,
   roomId: number,
   title: string,
-  userButtonName?: string
+  userButtonName: string | undefined,
+  auctionId: number
 ): Promise<void> {
-  await page.goto(`/live/${roomId}`);
+  await page.goto(`/live/${roomId}?auctionId=${auctionId}`);
   if (userButtonName) {
     await page.getByRole("button", { name: userButtonName }).click();
   }
@@ -79,8 +102,8 @@ test("live room keeps two pages synchronized through bids, sold state, payment, 
   const pageB = await context.newPage();
 
   try {
-    await openLiveRoom(pageA, demo.room.id, title, demo.bidders[0]?.nickname);
-    await openLiveRoom(pageB, demo.room.id, title, demo.bidders[1]?.nickname);
+    await openLiveRoom(pageA, demo.room.id, title, demo.bidders[0]?.nickname, auctionId);
+    await openLiveRoom(pageB, demo.room.id, title, demo.bidders[1]?.nickname, auctionId);
 
     await pageA.getByTestId("bid-button").click();
     await expect(pageB.getByTestId("current-price")).toHaveText("¥109.00");
@@ -161,4 +184,113 @@ test("admin auction list cancels a running auction from the page", async ({ page
 
   const list = await apiGet<AuctionListResponse>(request, "/api/auctions");
   expect(list.items.find((item) => item.id === auctionId)?.status).toBe("Canceled");
+});
+
+test("live room shows an outbid notice without selling the auction", async ({ browser, request }) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const title = `E2E被超越提醒商品 ${suffix}`;
+  const started = await createAuctionFixture(request, demo.room.id, title, {
+    start: true,
+    ceilingPrice: null
+  });
+  const auctionId = started.auction.id;
+
+  const context = await browser.newContext();
+  const pageA = await context.newPage();
+  const pageB = await context.newPage();
+
+  try {
+    await openLiveRoom(pageA, demo.room.id, title, demo.bidders[0]?.nickname, auctionId);
+    await openLiveRoom(pageB, demo.room.id, title, demo.bidders[1]?.nickname, auctionId);
+
+    await pageA.getByTestId("bid-button").click();
+    await expect(pageB.getByTestId("current-price")).toHaveText("¥109.00");
+
+    await pageB.getByTestId("bid-button").click();
+    await expect(pageA.getByTestId("current-price")).toHaveText("¥119.00");
+    await expect(pageA.getByTestId("notice")).toContainText("已被超越");
+    await expect(pageA.getByText("去支付")).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
+
+test("live room shows passed result without a payment link", async ({ page, request }) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const title = `E2E流拍展示商品 ${suffix}`;
+  const started = await createAuctionFixture(request, demo.room.id, title, {
+    start: true,
+    ceilingPrice: null,
+    endMsFromNow: 1_000
+  });
+
+  await page.waitForTimeout(1_300);
+  await page.goto(`/live/${demo.room.id}?auctionId=${started.auction.id}`);
+
+  await expect(page.locator(".passed-result")).toContainText("竞拍已流拍，无人成交");
+  await expect(page.getByText("去支付")).toHaveCount(0);
+});
+
+test("admin publish page sends auto-extension parameters to the API", async ({ page, request }) => {
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const title = `E2E发布延时参数商品 ${suffix}`;
+
+  await page.goto("/admin/auctions/new");
+  await page.getByLabel("商品标题").fill(title);
+  await page.getByLabel("商品图片 URL").fill("https://example.com/e2e-extension.png");
+  await page.getByLabel("封顶价").fill("");
+  await page.getByLabel("延时触发阈值秒").fill("6");
+  await page.getByLabel("每次延长秒数").fill("13");
+  const createButton = page.getByRole("button", { name: "创建", exact: true });
+  await expect(createButton).toBeEnabled();
+  await createButton.click();
+
+  const resultPanel = page.locator(".result-panel");
+  await expect(resultPanel).toContainText("延时 6s / +13s");
+  const resultText = (await resultPanel.textContent()) ?? "";
+  const auctionId = Number(resultText.match(/竞拍 #(\d+)/)?.[1] ?? 0);
+  expect(auctionId).toBeGreaterThan(0);
+
+  const detail = await apiGet<AuctionDetailResponse>(request, `/api/auctions/${auctionId}`);
+  expect(detail.auction.extendThresholdSec).toBe(6);
+  expect(detail.auction.extendDurationSec).toBe(13);
+});
+
+test("admin can edit scheduled auction rules from the list page", async ({ page, request }) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const title = `E2E编辑未开始规则商品 ${suffix}`;
+  const scheduled = await createAuctionFixture(request, demo.room.id, title, {
+    start: false,
+    ceilingPrice: 299,
+    extendThresholdSec: 10,
+    extendDurationSec: 15
+  });
+  const auctionId = scheduled.auction.id;
+
+  await page.goto("/admin/auctions");
+  const row = page.locator(".table-row", { hasText: `#${auctionId}` });
+  await expect(row).toBeVisible();
+  await row.getByRole("link", { name: "编辑" }).click();
+  await expect(page.getByRole("heading", { name: "编辑竞拍规则" })).toBeVisible();
+  await expect(page.getByLabel("起拍价")).toHaveValue("99");
+
+  await page.getByLabel("起拍价").fill("130");
+  await page.getByLabel("加价幅度").fill("20");
+  await page.getByLabel("封顶价").fill("");
+  await page.getByLabel("延时触发阈值秒").fill("8");
+  await page.getByLabel("每次延长秒数").fill("16");
+  await page.getByRole("button", { name: "保存规则" }).click();
+  await expect(page.getByText("规则已保存")).toBeVisible();
+
+  const detail = await apiGet<AuctionDetailResponse>(request, `/api/auctions/${auctionId}`);
+  expect(detail.auction.status).toBe("Scheduled");
+  expect(detail.auction.startPrice).toBe(130);
+  expect(detail.auction.currentPrice).toBe(130);
+  expect(detail.auction.incrementStep).toBe(20);
+  expect(detail.auction.ceilingPrice).toBeNull();
+  expect(detail.auction.extendThresholdSec).toBe(8);
+  expect(detail.auction.extendDurationSec).toBe(16);
 });
