@@ -1,6 +1,6 @@
 # 直播竞拍项目本地环境配置
 
-本文根据 `/Users/haolin6/Downloads/AI全栈课题-常见问题指引.md` 和当前项目需要整理。
+本文记录实时竞拍大师的本地运行环境。
 
 ## 当前机器检查结果
 
@@ -23,11 +23,11 @@
 - `infra/mysql/init/001_create_schema.sql`：初始化 `live_auction` 数据库和环境探针表。
 - `scripts/check-env.mjs`：检查 Node/npm/MySQL/Redis/Docker 是否可用。
 
-## 推荐本地环境方案
+## 本地环境方案
 
-### 方案 A：Homebrew 原生安装
+### Homebrew 原生安装
 
-适合当前 Mac 直接开发。
+当前 Mac 使用 Homebrew 运行 MySQL 和 Redis。
 
 ```bash
 /opt/homebrew/bin/brew install mysql@8.0 redis
@@ -42,8 +42,6 @@
 /opt/homebrew/bin/redis-cli ping
 ```
 
-如果 `mysql@8.0` 未自动加入 PATH，可根据 Homebrew 提示把 MySQL bin 目录加入 shell 配置。
-
 当前机器已完成 Homebrew 原生安装：
 
 - MySQL：`mysql@8.0 8.0.46_1`
@@ -51,11 +49,9 @@
 - MySQL 服务：`homebrew.mxcl.mysql@8.0`
 - Redis 服务：`homebrew.mxcl.redis`
 
-### 方案 B：Docker Compose
+### Docker Compose
 
-适合不想污染本机数据库环境，或后续团队统一环境。
-
-前提：安装 Docker Desktop。
+安装 Docker Desktop 后也可以使用仓库内的 `docker-compose.yml` 启动 MySQL 和 Redis。
 
 ```bash
 cp .env.example .env
@@ -72,7 +68,7 @@ docker exec live-auction-mysql mysqladmin ping -h 127.0.0.1 -uroot -pchange_root
 
 ## 本地环境变量
 
-不要把真实密钥写进仓库。真实配置只放在 `.env`。
+真实配置只放在 `.env`，`.env` 不进入仓库。
 
 最少需要：
 
@@ -94,7 +90,7 @@ REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 ```
 
-Doubao/火山方舟相关字段只在需要接 AI 能力时填写：
+Doubao/火山方舟字段为预留配置，当前业务链路未调用模型服务：
 
 ```dotenv
 ARK_MODEL=doubao-seed-2-0-lite
@@ -129,13 +125,8 @@ MYSQL_PASSWORD=change_me
 
 ## 直播流环境
 
-FAQ 明确说明直播部分可以用固定视频模拟，不是必须搭建真实推拉流。为了 15 天比赛节奏，建议第一阶段用固定视频或 HLS 示例源模拟直播画面，把主要精力放在竞拍状态机、WebSocket 同步和高并发出价链路。
-
-如果后续要做真实推流，再从以下方案中二选一：
-
-- 火山视频直播：需要可用域名，配置成本较高。
-- 自建开源流媒体：SRS、ZLMediaKit 或 MediaMTX，适合云服务器演示。
+当前版本使用本地素材模拟直播间，没有接入真实推拉流。
 
 ## 安全注意
 
-FAQ 和宣讲 PDF 中都出现了共享模型资源信息。项目仓库中不要提交真实 API Key、云服务账号、数据库密码或直播鉴权信息。
+仓库不提交真实 API Key、云服务账号、数据库密码或直播鉴权信息。

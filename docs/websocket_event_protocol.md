@@ -1,21 +1,19 @@
-# WebSocket Event Protocol
+# WebSocket 事件协议
 
-## Endpoint
+## 连接端点
 
-- Local API: `http://127.0.0.1:4000` with the Socket.IO default path.
-- Local Web: `/live/:roomId` connects directly to the API WebSocket endpoint.
-- Transport in this implementation is Socket.IO on the same API HTTP server, using the default Socket.IO path and the event names below.
+- API：`http://127.0.0.1:4000`
+- Web：`/live/:roomId`
+- 传输：Socket.IO，挂载在 Fastify HTTP server 上。
 
-## Client Event Shape
+## 客户端事件
 
-Clients emit a Socket.IO event with a payload and optional ack callback.
-
-Supported client events:
-
-- `room.join`: `{ "roomId": 1, "userId": 2 }`
-- `room.leave`: `{ "roomId": 1 }`
-- `auction.subscribe`: `{ "auctionId": 41 }`
-- `bid.place`: `{ "auctionId": 41, "amount": 109, "requestId": "bid-1" }`
+| 事件 | Payload |
+|---|---|
+| `room.join` | `{ "roomId": 1, "userId": 2 }` |
+| `room.leave` | `{ "roomId": 1 }` |
+| `auction.subscribe` | `{ "auctionId": 41 }` |
+| `bid.place` | `{ "auctionId": 41, "amount": 109, "requestId": "bid-1" }` |
 
 `bid.place` does not trust a client supplied `userId`. The server derives the bidder from the socket that successfully completed `room.join`. If a compatibility payload contains `userId`, it must match the joined socket user exactly.
 
@@ -37,7 +35,7 @@ Failures return:
 }
 ```
 
-## Server Event Envelope
+## 服务端事件信封
 
 All server events are emitted on their event names, with this event object:
 
@@ -52,7 +50,7 @@ All server events are emitted on their event names, with this event object:
 }
 ```
 
-Supported server events:
+服务端事件：
 
 - `auction.snapshot`
 - `bid.accepted`
@@ -66,7 +64,7 @@ Supported server events:
 - `user.outbid`
 - `room.presence`
 
-## Important Payloads
+## 关键 Payload
 
 `ranking.updated`:
 
@@ -106,14 +104,14 @@ Supported server events:
 }
 ```
 
-## Room Isolation
+## 房间隔离
 
 - `room.join` validates an active room and a bidder user.
 - `auction.subscribe` requires a successful `room.join`.
 - `auction.subscribe` validates `auction.roomId === socket.roomId`.
 - `bid.place` validates the same room match before calling the shared bid service.
 
-## Reconnect Strategy
+## 重连恢复
 
 The web client keeps the latest HTTP/WebSocket snapshot on screen. On reconnect it runs:
 
@@ -121,4 +119,4 @@ The web client keeps the latest HTTP/WebSocket snapshot on screen. On reconnect 
 2. `auction.subscribe`
 3. Receives a fresh `auction.snapshot`
 
-Missed events are not replayed in node 3. The authoritative recovery point is the latest MySQL-backed snapshot.
+断线期间事件不做回放。恢复后的权威状态来自 MySQL 支撑的最新 snapshot。

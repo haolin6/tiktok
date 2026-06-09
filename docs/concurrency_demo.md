@@ -1,41 +1,47 @@
-# Concurrency Demo
+# 并发一致性演示
 
-## Goal
+## 目标
 
-`npm run demo:concurrency` proves that 100 users submitting the same next bid at the same time do not raise the price more than once and do not create duplicate orders.
+`npm run demo:concurrency` 证明并发出价不会重复涨价、重复落 bid 或重复生成订单。
 
-The script creates its own product, auction, and 100 prefixed bidders. It does not truncate tables.
+脚本会创建独立商品、竞拍和带固定前缀的测试用户，不清空业务表，不污染手工演示竞拍。
 
-## Command
+## 四种模式
 
 ```bash
-npm run demo:concurrency
+npm run demo:concurrency -- --mode=unique
+npm run demo:concurrency -- --mode=duplicate-accepted
+npm run demo:concurrency -- --mode=duplicate-rejected
+npm run demo:concurrency -- --mode=lock-busy
 ```
 
-Verified on 2026-06-07 after switching to the official `redis` client:
+| 模式 | 验证目标 |
+|---|---|
+| `unique` | 100 个不同用户同时抢同一口价，最终只有 1 个成功出价和 1 个订单 |
+| `duplicate-accepted` | 同一个成功请求重复提交时只回放第一次成功结果 |
+| `duplicate-rejected` | 同一个失败请求重复提交时只回放第一次拒绝结果 |
+| `lock-busy` | Redis lock 被占用时返回 `LOCK_BUSY`，释放后合法请求继续成功 |
+
+## 代表性输出
+
+`unique` 模式的验收输出包含：
 
 ```text
 redis=PONG
-auctionId=73
 attempts=100
 accepted=1
 rejected=99
-lockBusy=61
-businessRejected=38
 duplicate=0
-durationMs=248
 finalStatus=Sold
 finalPrice=109
-finalWinnerId=47
 orderCount=1
 acceptedBidRows=1
 rejectedBidRows=99
-lockBusyBidRows=61
 rejectedEventRows=99
 eventCounts=auction.created:1,auction.sold:1,auction.started:1,bid.accepted:1,bid.rejected:99,order.created:1
 ```
 
-## Consistency Rules
+## 一致性口径
 
 - `attempts = accepted + rejected + duplicate`
 - `rejected = lockBusy + businessRejected`
@@ -44,9 +50,9 @@ eventCounts=auction.created:1,auction.sold:1,auction.started:1,bid.accepted:1,bi
 - `lockBusyBidRows = lockBusy`
 - `orderCount = 1`
 
-## Redis Keys
+## Redis Key
 
-Bid request idempotency:
+出价幂等：
 
 ```text
 auction:{auctionId}:user:{userId}:request:{requestId}
@@ -64,9 +70,9 @@ Auction lock:
 auction:{auctionId}:lock
 ```
 
-The lock uses `SET key token NX PX ttlMs` and Lua token verification before delete.
+锁使用 `SET key token NX PX ttlMs`，释放时通过 Lua 校验 token。
 
-## MySQL Evidence Queries
+## MySQL 证据查询
 
 ```sql
 SELECT
@@ -81,33 +87,14 @@ SELECT
 FROM auctions a
 LEFT JOIN orders o ON o.auction_id = a.id
 LEFT JOIN bids b ON b.auction_id = a.id
-WHERE a.id = 73
+WHERE a.id = <auctionId>
 GROUP BY a.id, a.status, a.current_price, a.current_winner_id;
-```
-
-Verified result:
-
-```text
-id  status  current_price  current_winner_id  order_count  accepted_bids  rejected_bids  lock_busy_bids
-73  Sold    109.00         47                 1            1              99             61
 ```
 
 ```sql
 SELECT event_type, COUNT(*) AS event_count
 FROM auction_events
-WHERE auction_id = 73
+WHERE auction_id = <auctionId>
 GROUP BY event_type
 ORDER BY event_type;
-```
-
-Verified result:
-
-```text
-event_type       event_count
-auction.created  1
-auction.sold     1
-auction.started  1
-bid.accepted     1
-bid.rejected     99
-order.created    1
 ```

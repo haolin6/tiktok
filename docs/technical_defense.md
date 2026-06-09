@@ -1,0 +1,153 @@
+# 技术答辩说明
+
+## 系统架构
+
+```mermaid
+flowchart LR
+  Admin["后台<br/>/admin/auctions/new<br/>/admin/auctions<br/>/admin/orders"] --> Web["React + Vite"]
+  UserA["用户 A<br/>/live/:roomId"] --> Web
+  UserB["用户 B<br/>/live/:roomId"] --> Web
+  Pay["支付/订单<br/>/pay/:orderId<br/>/me/orders"] --> Web
+
+  Web -->|"HTTP /api/*"| API["Fastify API"]
+  Web -->|"Socket.IO"| WS["Realtime Hub"]
+  API --> Service["Auction / Bid / Order Services"]
+  WS --> Service
+  Service --> Redis["Redis<br/>lock + idempotency + presence"]
+  Service --> MySQL["MySQL<br/>transactions + unique keys"]
+  Service --> Events["auction_events"]
+  Demo["simulate-concurrency.ts"] --> Service
+```
+
+前端负责后台、直播间、订单和模拟支付页面；Fastify 提供 HTTP API；Socket.IO 负责房间级实时事件；Redis 负责短期锁、幂等和在线状态；MySQL 是最终事实来源；并发脚本复用业务服务验证一致性。
+
+## 已完成页面和接口
+
+| 模块 | 路径/接口 | 完成状态 |
+|---|---|---|
+| 后台发布竞拍 | `/admin/auctions/new` | 已完成 |
+| 后台竞拍列表 | `/admin/auctions` | 已完成，含启动和取消 |
+| 用户直播间 | `/live/:roomId` | 已完成，含双用户实时同步 |
+| 模拟支付 | `/pay/:orderId` | 已完成 |
+| 后台订单 | `/admin/orders` | 已完成 |
+| 用户订单历史 | `/me/orders` | 已完成 |
+| 出价 API | `POST /api/auctions/:id/bids` | 已完成 |
+| 取消 API | `POST /api/auctions/:id/cancel` | 已完成 |
+| 模拟支付 API | `POST /api/orders/:id/mock-pay` | 已完成 |
+
+## 状态机
+
+状态枚举为 `Draft`、`Scheduled`、`Running`、`Sold`、`Passed`、`Canceled`。自动延时不是独立状态，而是在 `Running` 中更新 `end_at` 并广播 `auction.extended`。
+
+```mermaid
+stateDiagram-v2
+  [*] --> Draft
+  Draft --> Scheduled: 创建规则
+  Draft --> Canceled: 取消
+  Scheduled --> Running: 开始
+  Scheduled --> Canceled: 取消
+  Running --> Running: 有效出价触发延时
+  Running --> Sold: 封顶或到期有赢家
+  Running --> Passed: 到期无有效出价
+  Running --> Canceled: 取消
+  Sold --> [*]
+  Passed --> [*]
+  Canceled --> [*]
+```
+
+状态规则：
+
+- `Running` 接收有效出价。
+- `Sold`、`Passed`、`Canceled` 是终态。
+- 封顶价成交优先于自动延时。
+- 到期结算和订单创建落在 MySQL 事务路径中。
+
+## 数据库职责
+
+| 表 | 职责 | 关键约束 |
+|---|---|---|
+| `users` | 演示主播和竞拍用户 | `demo_key` 唯一 |
+| `products` | 商品信息 | `created_by` 外键 |
+| `auction_rooms` | 直播间素材和房间状态 | `demo_key` 唯一 |
+| `auctions` | 竞拍规则、价格、状态机 | 状态、价格和时间约束 |
+| `bids` | 成功/失败出价记录 | `uniq_bids_request` 防重复请求 |
+| `orders` | 成交订单和支付状态 | `uniq_orders_auction` 防重复订单 |
+| `auction_events` | 业务事件证据 | 记录创建、开始、出价、延时、成交、取消、支付 |
+
+## WebSocket 实时能力
+
+客户端事件：
+
+- `room.join`
+- `room.leave`
+- `auction.subscribe`
+- `bid.place`
+
+服务端事件：
+
+- `auction.snapshot`
+- `bid.accepted`
+- `bid.rejected`
+- `ranking.updated`
+- `auction.extended`
+- `auction.sold`
+- `auction.passed`
+- `auction.canceled`
+- `order.paid`
+- `user.outbid`
+- `room.presence`
+
+房间隔离：
+
+- `room.join` 校验有效 room 和 bidder 用户。
+- `auction.subscribe` 在成功 `room.join` 后执行。
+- 订阅和出价都校验 `auction.roomId === socket.roomId`。
+- 重连后重新 `room.join`、`auction.subscribe`，再接收最新 `auction.snapshot`。
+
+## 并发一致性
+
+| 层 | 职责 | 证据 |
+|---|---|---|
+| Redis lock | 控制同一竞拍同一时刻只有一个请求进入关键区 | `unique`、`lock-busy` 模式 |
+| Redis 幂等 key | 同一 `auctionId + userId + requestId` 重复请求只回放第一次结果 | `duplicate-accepted`、`duplicate-rejected` 模式 |
+| MySQL 事务和唯一键 | 兜底 bid request 唯一和订单唯一 | `uniq_bids_request`、`uniq_orders_auction` |
+
+并发脚本：
+
+```bash
+npm run demo:concurrency -- --mode=unique
+npm run demo:concurrency -- --mode=duplicate-accepted
+npm run demo:concurrency -- --mode=duplicate-rejected
+npm run demo:concurrency -- --mode=lock-busy
+```
+
+核心结果口径：
+
+- `attempts = accepted + rejected + duplicate`
+- `rejected = lockBusy + businessRejected`
+- `orderCount = 1`
+- `acceptedBidRows = accepted`
+- `rejectedBidRows = rejected`
+
+## AI 使用
+
+本项目使用 AI 辅助全栈开发和交付，没有在业务运行链路中接入大模型 API、RAG 或向量库。
+
+AI 参与需求拆解、架构设计、节点任务拆分、代码实现辅助、测试补充、文档整理和答辩材料生成。Agent 协作方式包括主实现 Agent、修改 Agent 和审核 Agent。Prompt 流程为：冻结范围、生成可执行 spec、按真实代码实现、用命令和页面验收、修正文档边界。
+
+`.env.example` 中的 Doubao/火山方舟字段是预留配置，当前版本没有调用模型服务。
+
+## 当前边界
+
+当前提交版本未接入真实直播推流、真实支付、完整登录鉴权、复杂数据看板、线上千级压测和独立竞拍详情页。
+
+## 答辩问答
+
+| 问题 | 回答 |
+|---|---|
+| 为什么不用真实直播流？ | 当前任务核心是直播竞拍主链路。系统使用本地素材模拟直播间，把实现重点放在竞拍规则、实时同步、订单和并发一致性上。 |
+| Redis 和 MySQL 谁是最终事实？ | MySQL 是最终事实。Redis 负责短期并发控制、幂等和在线状态。 |
+| 为什么同一竞拍不会生成多个订单？ | 业务结算路径只为 `Sold` 竞拍创建订单，`orders` 表的 `uniq_orders_auction` 约束保证同一竞拍最多一个订单。 |
+| 重复点击出价怎么处理？ | 同一 `auctionId + userId + requestId` 命中 Redis 幂等 key，MySQL 的 `uniq_bids_request` 继续兜底。 |
+| 断线重连后如何恢复？ | 客户端重新加入 room、重新订阅 auction，服务端发送 MySQL 支撑的最新 `auction.snapshot`。 |
+| 支付是真实支付吗？ | 不是。当前版本是模拟支付，只更新本地订单状态并广播 `order.paid`。 |
