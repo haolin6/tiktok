@@ -1,0 +1,38 @@
+{
+  "name": "douyin-live-auction-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Douyin e-commerce AI full-stack live auction project foundation.",
+  "type": "module",
+  "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @live-auction/api\" \"npm run dev -w @live-auction/web\"",
+    "dev:api": "npm run dev -w @live-auction/api",
+    "dev:web": "npm run dev -w @live-auction/web",
+    "build": "npm run build -w @live-auction/shared && npm run build -w @live-auction/api && npm run build -w @live-auction/web",
+    "test": "npm run test -w @live-auction/shared && npm run test -w @live-auction/api",
+    "test:e2e": "playwright test",
+    "check:env": "node scripts/check-env.mjs",
+    "db:migrate": "npm run db:migrate -w @live-auction/api",
+    "db:seed": "npm run db:seed -w @live-auction/api",
+    "demo:concurrency": "npm run demo:concurrency -w @live-auction/api --",
+    "db:mysql:ping": "/opt/homebrew/opt/mysql@8.0/bin/mysqladmin ping -h 127.0.0.1 -P 3306 -u root",
+    "redis:ping": "/opt/homebrew/bin/redis-cli -h 127.0.0.1 -p 6379 ping"
+  },
+  "engines": {
+    "node": ">=22.17.0",
+    "npm": ">=10.9.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^22.15.29",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

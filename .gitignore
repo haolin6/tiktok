@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Logs and runtime output
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+coverage/
+test-results/
+playwright-report/
+outputs/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local database volumes if someone switches compose to bind mounts
+.local/
