@@ -186,6 +186,63 @@ test("admin auction list cancels a running auction from the page", async ({ page
   expect(list.items.find((item) => item.id === auctionId)?.status).toBe("Canceled");
 });
 
+test("permanent live room keeps the canceled auction after a bid and does not show an old payment link", async ({
+  page,
+  request
+}) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
+  const bidderA = demo.bidders[0]!;
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const existingAuctions = await apiGet<AuctionListResponse>(request, "/api/auctions");
+  for (const auction of existingAuctions.items) {
+    if (auction.roomId === demo.room.id && auction.status === "Running") {
+      await apiPost(request, `/api/auctions/${auction.id}/cancel`, {
+        reason: "e2e isolate permanent room regression"
+      });
+    }
+  }
+
+  const oldSold = await createAuctionFixture(request, demo.room.id, `E2E旧成交商品 ${suffix}`, {
+    start: true,
+    ceilingPrice: 109
+  });
+  await apiPost(request, `/api/auctions/${oldSold.auction.id}/bids`, {
+    userId: bidderA.id,
+    amount: 109,
+    requestId: `${suffix}-old-sold`
+  });
+  const orders = await apiGet<OrderListResponse>(request, "/api/orders");
+  expect(orders.items.find((item) => item.auctionId === oldSold.auction.id)?.buyerId).toBe(
+    bidderA.id
+  );
+
+  await page.goto(`/live/${demo.room.id}?userId=${bidderA.id}`);
+  await expect(page.getByRole("heading", { name: `E2E旧成交商品 ${suffix}` })).toBeVisible();
+  await expect(page.getByRole("link", { name: "去支付" })).toBeVisible();
+
+  const currentTitle = `E2E取消后保留当前场 ${suffix}`;
+  const current = await createAuctionFixture(request, demo.room.id, currentTitle, {
+    start: true,
+    ceilingPrice: null
+  });
+  await apiPost(request, `/api/auctions/${current.auction.id}/bids`, {
+    userId: bidderA.id,
+    amount: 109,
+    requestId: `${suffix}-current-before-cancel`
+  });
+  await apiPost(request, `/api/auctions/${current.auction.id}/cancel`, {
+    reason: "e2e cancel after a bid"
+  });
+
+  await expect(page.getByRole("heading", { name: currentTitle })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByText("已取消")).toBeVisible();
+  await expect(page.getByTestId("remaining-time")).toHaveText("0.0s");
+  await page.waitForTimeout(3_500);
+  await expect(page.getByRole("heading", { name: currentTitle })).toBeVisible();
+  await expect(page.getByTestId("remaining-time")).toHaveText("0.0s");
+  await expect(page.getByRole("link", { name: "去支付" })).toHaveCount(0);
+});
+
 test("live room shows an outbid notice without selling the auction", async ({ browser, request }) => {
   const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
   const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
@@ -234,6 +291,7 @@ test("live room shows passed result without a payment link", async ({ page, requ
 });
 
 test("admin publish page sends auto-extension parameters to the API", async ({ page, request }) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
   const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
   const title = `E2E发布延时参数商品 ${suffix}`;
 
@@ -252,6 +310,16 @@ test("admin publish page sends auto-extension parameters to the API", async ({ p
   const resultText = (await resultPanel.textContent()) ?? "";
   const auctionId = Number(resultText.match(/竞拍 #(\d+)/)?.[1] ?? 0);
   expect(auctionId).toBeGreaterThan(0);
+  await expect(resultPanel.getByRole("link", { name: "进入直播间" })).toHaveAttribute(
+    "href",
+    `/live/${demo.room.id}?auctionId=${auctionId}`
+  );
+  for (const bidder of demo.bidders) {
+    await expect(resultPanel.getByRole("link", { name: bidder.nickname })).toHaveAttribute(
+      "href",
+      `/live/${demo.room.id}?userId=${bidder.id}`
+    );
+  }
 
   const detail = await apiGet<AuctionDetailResponse>(request, `/api/auctions/${auctionId}`);
   expect(detail.auction.extendThresholdSec).toBe(6);

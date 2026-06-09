@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type {
   AuctionDto,
@@ -108,6 +108,10 @@ function remainingMilliseconds(
   receivedAtMs = Date.now(),
   nowMs = Date.now()
 ): number {
+  if (snapshot.auction.status !== "Running") {
+    return 0;
+  }
+
   const end = new Date(snapshot.auction.endAt).getTime();
   const server = new Date(snapshot.serverTime).getTime();
   const correctedServerNow = server + Math.max(0, nowMs - receivedAtMs);
@@ -150,21 +154,45 @@ function getStatusLabel(status: AuctionDto["status"]): string {
   return labels[status];
 }
 
-function selectAuctionForRoom(items: AuctionDto[], roomId: number): AuctionDto | null {
-  const priority: Record<AuctionDto["status"], number> = {
-    Running: 0,
-    Scheduled: 1,
-    Sold: 2,
-    Passed: 3,
-    Draft: 4,
-    Canceled: 5
-  };
+function selectAuctionForRoom(
+  items: AuctionDto[],
+  roomId: number,
+  currentAuction: AuctionDto | null = null
+): AuctionDto | null {
+  const candidates = items.filter((item) => item.roomId === roomId);
 
-  const candidates = items
-    .filter((item) => item.roomId === roomId)
-    .sort((left, right) => priority[left.status] - priority[right.status] || right.id - left.id);
+  const running = candidates
+    .filter((item) => item.status === "Running")
+    .sort((left, right) => right.id - left.id)[0];
+  if (running) {
+    return running;
+  }
 
-  return candidates[0] ?? null;
+  const latest = [...candidates].sort((left, right) => right.id - left.id)[0] ?? null;
+  if (currentAuction) {
+    const current = candidates.find((item) => item.id === currentAuction.id);
+    if (current) {
+      if (latest && latest.id > current.id && terminalStatuses.has(latest.status)) {
+        return latest;
+      }
+      return current;
+    }
+  }
+
+  return latest;
+}
+
+function liveAuctionHref(auction: Pick<AuctionDto, "id" | "roomId">, userId?: number): string {
+  const params = new URLSearchParams({ auctionId: String(auction.id) });
+  if (userId !== undefined) {
+    params.set("userId", String(userId));
+  }
+
+  return `/live/${auction.roomId}?${params.toString()}`;
+}
+
+function liveUserHref(roomId: number, userId: number): string {
+  return `/live/${roomId}?userId=${userId}`;
 }
 
 function realtimeUrl(): string {
@@ -327,7 +355,7 @@ function AdminAuctionsPage() {
                   取消
                 </button>
               ) : null}
-              <a href={`/live/${auction.roomId}`}>直播间</a>
+              <a href={liveAuctionHref(auction)}>直播间</a>
               {demo?.room.id === auction.roomId ? <span className="muted">Demo</span> : null}
             </div>
           </div>
@@ -504,7 +532,17 @@ function NewAuctionPage() {
           <span className="muted">
             延时 {created.auction.extendThresholdSec}s / +{created.auction.extendDurationSec}s
           </span>
-          <a href={`/live/${created.auction.roomId}`}>进入直播间</a>
+          <a href={liveAuctionHref(created.auction)}>进入直播间</a>
+          {demo ? (
+            <div className="user-entry-links">
+              <span>常驻用户入口</span>
+              {demo.bidders.map((bidder) => (
+                <a href={liveUserHref(created.auction.roomId, bidder.id)} key={bidder.id}>
+                  {bidder.nickname}
+                </a>
+              ))}
+            </div>
+          ) : null}
           <a href="/admin/orders">订单列表</a>
         </section>
       ) : null}
@@ -760,7 +798,15 @@ function UserPicker({
   );
 }
 
-function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number | undefined }) {
+function LiveRoomPage({
+  roomId,
+  auctionId,
+  initialUserId
+}: {
+  roomId: number;
+  auctionId: number | undefined;
+  initialUserId: number | undefined;
+}) {
   const { demo, error: demoError } = useDemoContext();
   const [auction, setAuction] = useState<AuctionDto | null>(null);
   const [snapshot, setSnapshot] = useState<AuctionSnapshotResponse | null>(null);
@@ -774,22 +820,52 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
   const [onlineCount, setOnlineCount] = useState(0);
   const [clockMs, setClockMs] = useState(Date.now());
   const [reconnectTick, setReconnectTick] = useState(0);
+  const auctionRef = useRef<AuctionDto | null>(null);
 
   const showNotice = useCallback((message: string, tone: NoticeTone = "success") => {
     setNotice({ message, tone });
   }, []);
 
   const applySnapshot = useCallback((value: AuctionSnapshotResponse) => {
+    const previousAuctionId = auctionRef.current?.id ?? null;
+    auctionRef.current = value.auction;
     setSnapshot(value);
     setSnapshotReceivedAt(Date.now());
     setAuction(value.auction);
+    if (previousAuctionId !== null && previousAuctionId !== value.auction.id) {
+      setRanking([]);
+      setNotice(null);
+    }
+  }, []);
+
+  const setActiveAuction = useCallback((value: AuctionDto | null) => {
+    const previousAuctionId = auctionRef.current?.id ?? null;
+    auctionRef.current = value;
+    setAuction(value);
+    if (!value || previousAuctionId !== value.id) {
+      setSnapshot(null);
+      setRanking([]);
+      setNotice(null);
+    }
   }, []);
 
   useEffect(() => {
-    if (demo && selectedUserId === null && demo.bidders[0]) {
-      setSelectedUserId(demo.bidders[0].id);
+    if (!demo || selectedUserId !== null) {
+      return;
     }
-  }, [demo, selectedUserId]);
+
+    const initialUser = demo.bidders.find((bidder) => bidder.id === initialUserId) ?? demo.bidders[0];
+    if (initialUser) {
+      setSelectedUserId(initialUser.id);
+    }
+  }, [demo, initialUserId, selectedUserId]);
+
+  const selectUser = useCallback((userId: number) => {
+    setSelectedUserId(userId);
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.set("userId", String(userId));
+    window.history.replaceState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClockMs(Date.now()), 250);
@@ -803,7 +879,7 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
           if (value.auction.roomId !== roomId) {
             throw new Error(`竞拍 #${auctionId} 不属于直播间 ${roomId}`);
           }
-          setAuction(value.auction);
+          setActiveAuction(value.auction);
           setError(null);
         })
         .catch((err: Error) => setError(err.message));
@@ -812,15 +888,12 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
 
     api<AuctionListResponse>("/api/auctions")
       .then((value) => {
-        const selected = selectAuctionForRoom(value.items, roomId);
-        setAuction(selected);
-        if (!selected) {
-          setSnapshot(null);
-        }
+        const selected = selectAuctionForRoom(value.items, roomId, auctionRef.current);
+        setActiveAuction(selected);
         setError(null);
       })
       .catch((err: Error) => setError(err.message));
-  }, [auctionId, roomId]);
+  }, [auctionId, roomId, setActiveAuction]);
 
   const loadSnapshot = useCallback((auctionId: number) => {
     api<AuctionSnapshotResponse>(`/api/auctions/${auctionId}/snapshot`)
@@ -836,6 +909,15 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
   }, [loadAuction]);
 
   useEffect(() => {
+    if (auctionId) {
+      return;
+    }
+
+    const timer = window.setInterval(loadAuction, 3_000);
+    return () => window.clearInterval(timer);
+  }, [auctionId, loadAuction]);
+
+  useEffect(() => {
     if (!auction) {
       return;
     }
@@ -847,7 +929,7 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
       }
     }, 5_000);
     return () => window.clearInterval(timer);
-  }, [auction?.id, connectionStatus, loadSnapshot]);
+  }, [auction?.id, auction?.status, connectionStatus, loadSnapshot]);
 
   useEffect(() => {
     if (!auction || !demo || !selectedUserId) {
@@ -916,6 +998,7 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
         setOnlineCount(realtimeEvent.payload.onlineCount);
       } else if (realtimeEvent.type === "auction.canceled") {
         showNotice("竞拍已取消", "settled");
+        loadSnapshot(realtimeEvent.payload.auctionId);
       } else if (realtimeEvent.type === "auction.sold") {
         showNotice(`竞拍成交 ${formatMoney(realtimeEvent.payload.amount)}`, "settled");
       } else if (realtimeEvent.type === "auction.passed") {
@@ -957,7 +1040,7 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
       window.clearTimeout(reconnectTimer);
       socket.disconnect();
     };
-  }, [auction?.id, applySnapshot, demo, reconnectTick, roomId, selectedUserId, showNotice]);
+  }, [auction?.id, applySnapshot, demo, loadSnapshot, reconnectTick, roomId, selectedUserId, showNotice]);
 
   async function placeBid() {
     if (!snapshot || !selectedUserId || snapshot.nextBidAmount === null) {
@@ -1024,12 +1107,12 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
         </div>
         <aside className="auction-panel" data-testid="auction-panel">
           {demo ? (
-            <UserPicker bidders={demo.bidders} value={selectedUserId} onChange={setSelectedUserId} />
+            <UserPicker bidders={demo.bidders} value={selectedUserId} onChange={selectUser} />
           ) : null}
           <div className="connection-row">
             <span className={`connection-dot ${connectionStatus}`} />
             <strong data-testid="connection-status">{connectionStatus}</strong>
-            <span>{onlineCount} 在线</span>
+            <span>{onlineCount} 已连接用户</span>
           </div>
           {snapshot ? (
             <>
@@ -1056,7 +1139,7 @@ function LiveRoomPage({ roomId, auctionId }: { roomId: number; auctionId: number
                 </div>
                 <div className={isFinalCountdown ? "countdown-hot" : ""}>
                   <span>倒计时</span>
-                  <strong>{formatRemainingTime(remainingMsValue)}</strong>
+                  <strong data-testid="remaining-time">{formatRemainingTime(remainingMsValue)}</strong>
                 </div>
                 <div>
                   <span>领先者</span>
@@ -1285,10 +1368,12 @@ export function App() {
   if (segments[0] === "live") {
     const roomId = Number(segments[1]);
     const auctionId = Number(new URLSearchParams(window.location.search).get("auctionId"));
+    const userId = Number(new URLSearchParams(window.location.search).get("userId"));
     return (
       <LiveRoomPage
         roomId={Number.isInteger(roomId) && roomId > 0 ? roomId : 1}
         auctionId={Number.isInteger(auctionId) && auctionId > 0 ? auctionId : undefined}
+        initialUserId={Number.isInteger(userId) && userId > 0 ? userId : undefined}
       />
     );
   }

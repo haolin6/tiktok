@@ -14,16 +14,27 @@
 | 角色 | 负责人 |
 | 分工说明 | 负责需求拆解、前端页面、后端 API、WebSocket 实时同步、MySQL/Redis 一致性、测试、文档和演示材料 |
 | 源代码仓库 | https://github.com/haolin6/tiktok |
-| 演示视频 | https://uiva4ant5li.feishu.cn/minutes/obcn5b4bltgakd4sy96opf9g?from=list_page |
+| 演示视频 | https://www.bilibili.com/video/BV1z8EU6QEvx/?share_source=copy_web&vd_source=7809f2ded1c1625fb272ec03bd331ed9 |
 | 在线 Demo | 未部署线上 Demo；通过本地运行说明和演示视频替代 |
 
-演示视频说明：当前保留飞书链接，外部评委访问权限尚需用户确认；备用公开视频链接暂缺。
+演示视频说明：旧视频链接已移除，当前使用重录后的 B 站公开视频链接。
+
+## 评委快速验收路径
+
+建议评委按下面顺序快速检查：
+
+1. 先看三分钟演示视频，确认后台发布、直播间出价、实时同步、成交订单、模拟支付和并发一致性证据；评委也可以按下方本地路径和验收命令复现。
+2. 本地运行后，按路径依次打开 `/admin/auctions/new`、`/admin/auctions`、`/admin/auctions/:id/edit`、`/live/:roomId?userId=<id>`、`/pay/:orderId`、`/admin/orders`；演示指定场次时可用 `/live/:roomId?auctionId=<id>&userId=<id>`。
+3. 技术证据优先查看 `docs/final_acceptance_log.md`、`docs/performance_evidence.md`、`docs/ai_usage_evidence.md` 和 `docs/websocket_event_protocol.md`。
+4. 当前版本没有部署线上 Demo，没有接入真实直播推流、真实支付、真实图片上传或运行时大模型 API，也没有完成 1000+ 在线用户线上压测。
+
+其中 `:id`、`<id>`、`:roomId`、`:orderId` 需要替换成页面生成或列表中看到的真实数字 ID。
 
 ## 当前已完成能力
 
 - 后台发布竞拍：创建商品和竞拍规则，支持配置自动延时参数，支持创建后立即开始竞拍。
 - 后台规则编辑：`Scheduled` 竞拍可在开始前修改起拍价、加价幅度、封顶价、时间和延时参数。
-- 用户直播间出价：用户 A/B/C 可进入同一个直播间，按下一口价参与竞拍。
+- 用户直播间出价：演示页面预置用户 A/B/C，便于手动多端录屏；后端出价链路支持更多已存在的 `bidder` 用户参与同一竞拍，`demo:concurrency` 已验证 100 个不同用户同时出价。
 - WebSocket 实时同步：同步当前价、领先者、最近出价、排行榜、延时、成交、流拍、取消、支付和被超越提醒。
 - 竞拍规则：支持固定加价、封顶成交、结束前自动延时、到期成交或流拍、异常取消。
 - 订单链路：成交后生成订单，赢家可进入模拟支付页，后台和用户端可查看结果。
@@ -89,8 +100,10 @@ npm run dev
 - `/admin/auctions/new`：后台发布竞拍，含自动延时参数
 - `/admin/auctions`：后台竞拍列表、启动竞拍、取消竞拍、进入编辑
 - `/admin/auctions/:id/edit`：修改未开始竞拍规则
-- `/live/:roomId`：用户直播间
+- `/live/:roomId`：用户直播间，未指定竞拍时会跟随该直播间当前优先竞拍
 - `/live/:roomId?auctionId=<id>`：指定竞拍的用户直播间，便于演示和 E2E 隔离
+- `/live/:roomId?userId=<id>`：指定演示用户的常驻直播间入口，刷新后仍保留该用户身份并跟随当前竞拍
+- `/live/:roomId?auctionId=<id>&userId=<id>`：指定竞拍和演示用户的直播间入口
 - `/pay/:orderId`：模拟支付
 - `/admin/orders`：后台订单列表
 - `/me/orders`：用户订单和出价历史
@@ -159,7 +172,7 @@ npm run demo:realtime-fanout -- --clients=200
 - 线上千级或 1000+ 在线压测；当前只有本机 100/200 fanout 证明。
 - 真实图片文件上传；当前使用商品图片 URL。
 - 业务运行链路中的大模型 API、RAG 或向量库。
-- 飞书演示视频外部访问权限尚待用户确认，备用公开视频链接缺失。
+- 演示视频已替换为 B 站公开视频链接。
 
 这些能力不属于当前提交版本的已完成范围。
 

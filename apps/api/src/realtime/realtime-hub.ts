@@ -60,6 +60,14 @@ function userRoomName(userId: number): string {
   return `user:${userId}`;
 }
 
+function roomOnlineUsersKey(roomId: number): string {
+  return `room:${roomId}:online`;
+}
+
+function roomUserSocketsKey(roomId: number, userId: number): string {
+  return `room:${roomId}:user:${userId}:sockets`;
+}
+
 function parsePositiveInteger(value: unknown, field: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0) {
@@ -403,7 +411,7 @@ class SocketIoRealtimeHub implements RealtimeHub {
 
   private async handleDisconnect(socket: Socket): Promise<void> {
     if (typeof socket.data.roomId === "number" && typeof socket.data.userId === "number") {
-      await this.redis.command(["SREM", `room:${socket.data.roomId}:online`, String(socket.data.userId)]);
+      await this.removePresence(socket.data.roomId, socket.data.userId, socket.id);
       await this.publishPresence(socket.data.roomId);
     }
   }
@@ -424,11 +432,20 @@ class SocketIoRealtimeHub implements RealtimeHub {
       throw validationError(`User ${userId} is not allowed to join as bidder.`);
     }
 
-    socket.data.userId = userId;
-    socket.data.roomId = roomId;
+    if (typeof socket.data.roomId === "number" && typeof socket.data.userId === "number") {
+      const previousRoomId = socket.data.roomId;
+      const previousUserId = socket.data.userId;
+      await socket.leave(liveRoomName(previousRoomId));
+      await socket.leave(userRoomName(previousUserId));
+      await this.removePresence(socket.data.roomId, socket.data.userId, socket.id);
+      await this.publishPresence(previousRoomId);
+    }
+
     await socket.join(liveRoomName(roomId));
     await socket.join(userRoomName(userId));
-    await this.redis.command(["SADD", `room:${roomId}:online`, String(userId)]);
+    socket.data.userId = userId;
+    socket.data.roomId = roomId;
+    await this.addPresence(roomId, userId, socket.id);
     await this.publishPresence(roomId);
 
     return { roomId, userId };
@@ -440,9 +457,11 @@ class SocketIoRealtimeHub implements RealtimeHub {
     const roomId = parsePositiveInteger(payload.roomId, "roomId");
     await socket.leave(liveRoomName(roomId));
     if (socket.data.roomId === roomId && typeof socket.data.userId === "number") {
-      await this.redis.command(["SREM", `room:${roomId}:online`, String(socket.data.userId)]);
+      await socket.leave(userRoomName(socket.data.userId));
+      await this.removePresence(roomId, socket.data.userId, socket.id);
       await this.publishPresence(roomId);
       socket.data.roomId = null;
+      socket.data.userId = null;
     }
 
     return { roomId };
@@ -532,7 +551,7 @@ class SocketIoRealtimeHub implements RealtimeHub {
   }
 
   private async publishPresence(roomId: number): Promise<void> {
-    const onlineCountRaw = await this.redis.command(["SCARD", `room:${roomId}:online`]);
+    const onlineCountRaw = await this.redis.command(["SCARD", roomOnlineUsersKey(roomId)]);
     const onlineCount = typeof onlineCountRaw === "number" ? onlineCountRaw : 0;
     this.emitToRoom(
       liveRoomName(roomId),
@@ -544,6 +563,22 @@ class SocketIoRealtimeHub implements RealtimeHub {
         }
       })
     );
+  }
+
+  private async addPresence(roomId: number, userId: number, socketId: string): Promise<void> {
+    await this.redis.command(["SADD", roomUserSocketsKey(roomId, userId), socketId]);
+    await this.redis.command(["SADD", roomOnlineUsersKey(roomId), String(userId)]);
+  }
+
+  private async removePresence(roomId: number, userId: number, socketId: string): Promise<void> {
+    const userSocketsKey = roomUserSocketsKey(roomId, userId);
+    await this.redis.command(["SREM", userSocketsKey, socketId]);
+    const socketCountRaw = await this.redis.command(["SCARD", userSocketsKey]);
+    const socketCount = typeof socketCountRaw === "number" ? socketCountRaw : 0;
+    if (socketCount === 0) {
+      await this.redis.command(["DEL", userSocketsKey]);
+      await this.redis.command(["SREM", roomOnlineUsersKey(roomId), String(userId)]);
+    }
   }
 
   private makeEvent<TType extends RealtimeServerEventType>(

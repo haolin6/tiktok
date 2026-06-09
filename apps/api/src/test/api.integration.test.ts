@@ -868,6 +868,66 @@ describe("node 1 API integration", () => {
     }
   });
 
+  it("keeps room presence accurate when one user has multiple open sockets", async () => {
+    const uniqueSuffix = `presence-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+    const presenceRoomId = await createSecondRoom(pool, uniqueSuffix);
+    const socketA1 = await openSocket(realtimeUrl);
+    const socketA2 = await openSocket(realtimeUrl);
+    const socketB = await openSocket(realtimeUrl);
+    const socketC = await openSocket(realtimeUrl);
+
+    try {
+      const firstPresence = waitForRealtimeEvent(socketA1, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 1;
+      });
+      expect((await sendRealtime(socketA1, "room.join", { roomId: presenceRoomId, userId: bidderAId })).ok).toBe(
+        true
+      );
+      await firstPresence;
+
+      const duplicatePresence = waitForRealtimeEvent(socketA1, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 1;
+      });
+      expect((await sendRealtime(socketA2, "room.join", { roomId: presenceRoomId, userId: bidderAId })).ok).toBe(
+        true
+      );
+      await duplicatePresence;
+
+      const secondUserPresence = waitForRealtimeEvent(socketA1, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 2;
+      });
+      expect((await sendRealtime(socketB, "room.join", { roomId: presenceRoomId, userId: bidderBId })).ok).toBe(
+        true
+      );
+      await secondUserPresence;
+
+      const thirdUserPresence = waitForRealtimeEvent(socketA1, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 3;
+      });
+      expect((await sendRealtime(socketC, "room.join", { roomId: presenceRoomId, userId: bidderCId })).ok).toBe(
+        true
+      );
+      await thirdUserPresence;
+
+      const afterDuplicateClose = waitForRealtimeEvent(socketA1, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 3;
+      });
+      socketA2.close();
+      await afterDuplicateClose;
+
+      const afterFinalAClose = waitForRealtimeEvent(socketB, "room.presence", (packet) => {
+        return packet.data.payload.roomId === presenceRoomId && packet.data.payload.onlineCount === 2;
+      });
+      socketA1.close();
+      await afterFinalAClose;
+    } finally {
+      socketA1.close();
+      socketA2.close();
+      socketB.close();
+      socketC.close();
+    }
+  });
+
   it("sends user.outbid only to the previous winner and keeps event payloads consistent", async () => {
     const uniqueSuffix = `p0-outbid-${Date.now()}-${Math.round(Math.random() * 100000)}`;
     const productBody = await createProduct(app, `P0被超越提醒商品 ${uniqueSuffix}`);
@@ -1009,8 +1069,26 @@ describe("node 1 API integration", () => {
     const runningSocket = await openSocket(realtimeUrl);
     try {
       await joinAndSubscribe(runningSocket, roomId, bidderBId, runningAuction.auction.id);
+      const bidResponse = await app.inject({
+        method: "POST",
+        url: `/api/auctions/${runningAuction.auction.id}/bids`,
+        payload: {
+          userId: bidderBId,
+          amount: 109,
+          requestId: `${uniqueSuffix}-running-before-cancel`
+        }
+      });
+      expect(bidResponse.statusCode).toBe(200);
+      expect(bidResponse.json<PlaceBidResponse>().bid.amount).toBe(109);
+
       const canceledEvent = waitForRealtimeEvent(runningSocket, "auction.canceled", (packet) => {
         return packet.data.auctionId === runningAuction.auction.id;
+      });
+      const canceledSnapshot = waitForRealtimeEvent(runningSocket, "auction.snapshot", (packet) => {
+        return (
+          packet.data.payload.auction.id === runningAuction.auction.id &&
+          packet.data.payload.auction.status === "Canceled"
+        );
       });
       const cancelResponse = await app.inject({
         method: "POST",
@@ -1023,6 +1101,12 @@ describe("node 1 API integration", () => {
         previousStatus: "Running",
         status: "Canceled"
       });
+      expect((await canceledSnapshot).data.payload.order).toBeNull();
+      const [orderRows] = await pool.execute<CountRow[]>(
+        "SELECT COUNT(*) AS count FROM orders WHERE auction_id = ?",
+        [runningAuction.auction.id]
+      );
+      expect(Number(orderRows[0]?.count ?? 0)).toBe(0);
     } finally {
       runningSocket.close();
     }

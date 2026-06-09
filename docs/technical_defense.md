@@ -5,8 +5,8 @@
 ```mermaid
 flowchart LR
   Admin["后台<br/>/admin/auctions/new<br/>/admin/auctions<br/>/admin/orders"] --> Web["React + Vite"]
-  UserA["用户 A<br/>/live/:roomId"] --> Web
-  UserB["用户 B<br/>/live/:roomId"] --> Web
+  UserA["用户 A<br/>/live/:roomId?userId=:a"] --> Web
+  UserB["用户 B<br/>/live/:roomId?userId=:b"] --> Web
   Pay["支付/订单<br/>/pay/:orderId<br/>/me/orders"] --> Web
 
   Web -->|"HTTP /api/*"| API["Fastify API"]
@@ -28,7 +28,7 @@ flowchart LR
 | 后台发布竞拍 | `/admin/auctions/new` | 已完成，含自动延时参数 |
 | 后台竞拍列表 | `/admin/auctions` | 已完成，含启动、取消和 Scheduled 编辑入口 |
 | 未开始竞拍规则编辑 | `/admin/auctions/:id/edit`、`PATCH /api/auctions/:id` | 2026-06-10 修补完成，只允许 `Scheduled` |
-| 用户直播间 | `/live/:roomId`、`/live/:roomId?auctionId=<id>` | 已完成，含双用户实时同步、被超越提醒、成交/流拍结果 |
+| 用户直播间 | `/live/:roomId`、`/live/:roomId?auctionId=<id>`、`/live/:roomId?userId=<id>`、`/live/:roomId?auctionId=<id>&userId=<id>` | 已完成，演示页面预置 A/B/C 用户，支持常驻用户入口、刷新保留身份、按实际连接数显示在线用户、双端/多端同步、被超越提醒、成交/流拍结果；后端支持更多已存在的 `bidder` 用户参与 |
 | 模拟支付 | `/pay/:orderId` | 已完成 |
 | 后台订单 | `/admin/orders` | 已完成 |
 | 用户订单历史 | `/me/orders` | 已完成 |
@@ -170,7 +170,7 @@ AI 参与内容：
 
 ## 当前边界
 
-当前提交版本未接入真实直播推流、真实支付、完整登录鉴权、复杂数据看板、线上千级压测、线上 Demo 和运行时大模型 API。飞书演示视频外部访问权限尚待用户确认。
+当前提交版本未接入真实直播推流、真实支付、完整登录鉴权、复杂数据看板、线上千级压测、线上 Demo 和运行时大模型 API。演示视频已替换为 B 站公开视频链接。
 
 ## 答辩问答
 

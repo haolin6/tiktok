@@ -3,7 +3,7 @@
 ## 连接端点
 
 - API：`http://127.0.0.1:4000`
-- Web：`/live/:roomId`
+- Web：`/live/:roomId`；可选 `?userId=<id>` 保留演示用户身份，可选 `?auctionId=<id>` 固定某一场竞拍。
 - 传输：Socket.IO，挂载在 Fastify HTTP server 上。
 
 ## 客户端事件

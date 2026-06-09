@@ -282,6 +282,18 @@ textarea:focus {
   padding: 14px;
 }
 
+.user-entry-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.user-entry-links span {
+  color: #64748b;
+  font-size: 13px;
+}
+
 .result-panel.compact {
   margin-top: 12px;
 }

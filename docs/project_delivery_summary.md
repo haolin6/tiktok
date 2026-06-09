@@ -18,7 +18,7 @@
 | 角色 | 负责人 |
 | 分工说明 | 刘浩霖独立完成需求拆解、前端页面、后端 API、WebSocket 实时同步、MySQL/Redis 一致性、测试、文档和演示材料 |
 | 源代码仓库 | https://github.com/haolin6/tiktok |
-| 演示视频 | https://uiva4ant5li.feishu.cn/minutes/obcn5b4bltgakd4sy96opf9g?from=list_page |
+| 演示视频 | https://www.bilibili.com/video/BV1z8EU6QEvx/?share_source=copy_web&vd_source=7809f2ded1c1625fb272ec03bd331ed9 |
 | 在线 Demo | 未部署线上 Demo；通过本地运行说明和演示视频替代 |
 
 ## 节点交付时间线
@@ -29,13 +29,13 @@
 | 2026-06-03 | 节点 2：业务主链路 | 后台创建竞拍、用户出价、自动成交/流拍、订单生成、模拟支付、后台/用户订单页面 | `/admin/auctions/new`、`/live/:roomId`、`/pay/:orderId`、`/admin/orders`、`/me/orders` |
 | 2026-06-06 | 节点 3：实时和并发能力 | Socket.IO 房间隔离、重连后 snapshot 恢复、Redis lock、Redis 幂等 key、四种并发脚本模式、API/E2E 测试 | `apps/api/src/realtime/realtime-hub.ts`、`apps/api/src/services/bid-coordinator.ts`、`apps/api/src/scripts/simulate-concurrency.ts`、`apps/web/src/test/live-room.e2e.ts` |
 | 2026-06-09 | 最终补齐 | 根 README、管理端取消按钮、三分钟演示视频脚本、直播间展示图替换、GitHub 上传 | `README.md`、`apps/web/src/App.tsx`、`docs/demo_video_script.md`、`apps/web/public/demo/live-room-audience.png`、`https://github.com/haolin6/tiktok` |
-| 2026-06-10 | 反馈修补 | `user.outbid` 定向提醒、流拍前端展示、发布页延时参数、未开始规则编辑、fanout 脚本、AI/验收/性能/内测文档 | `docs/final_acceptance_log.md`、`docs/performance_evidence.md`、`docs/ai_usage_evidence.md`、`docs/internal_review_notes.md` |
+| 2026-06-10 | 反馈修补 | `user.outbid` 定向提醒、流拍前端展示、发布页延时参数、未开始规则编辑、A/B/C 常驻用户入口、在线数修复、fanout 脚本、AI/验收/性能/内测文档 | `docs/final_acceptance_log.md`、`docs/performance_evidence.md`、`docs/ai_usage_evidence.md`、`docs/internal_review_notes.md` |
 
 ## 已完成能力
 
 - 后台发布竞拍：创建商品、设置起拍价、加价幅度、竞拍时长、封顶价和自动延时参数。
 - 后台竞拍管理：查看竞拍列表，启动竞拍，取消 `Scheduled` 或 `Running` 状态竞拍，编辑 `Scheduled` 竞拍规则。
-- 用户直播间：展示直播间素材、竞拍商品、当前价、下一口价、倒计时、领先者、最近出价和排行榜。
+- 用户直播间：展示直播间素材、竞拍商品、当前价、下一口价、倒计时、领先者、最近出价和排行榜；支持 A/B/C 常驻用户入口、刷新保留身份，并按实际打开页面统计已连接用户。
 - 实时同步：通过 Socket.IO 同步 `auction.snapshot`、`bid.accepted`、`bid.rejected`、`ranking.updated`、`auction.extended`、`auction.sold`、`auction.passed`、`auction.canceled`、`order.paid`、`user.outbid`、`room.presence`。
 - 状态机：支持 `Draft`、`Scheduled`、`Running`、`Sold`、`Passed`、`Canceled` 六个状态。
 - 成交/流拍：封顶成交或到期有赢家时生成订单，赢家进入模拟支付页；到期无有效出价时流拍且无支付入口。
@@ -107,7 +107,7 @@ npm run demo:realtime-fanout -- --clients=200
 - 线上 Demo 部署。
 - 线上千级或 1000+ 用户压测。
 - 独立 `/admin/auctions/:id` 详情页。
-- 演示视频飞书外部访问权限尚待用户确认，备用公开视频链接缺失。
+- 演示视频已替换为 B 站公开视频链接。
 - 业务运行时大模型 API。
 
 这些内容不属于当前提交版本的已完成能力。
