@@ -150,6 +150,35 @@ function calculateNextBidAmount(auction: AuctionDto): number | null {
   return fromCents(Math.min(nextCents, toCents(auction.ceilingPrice)));
 }
 
+function normalizeRequestedBidAmount(auction: AuctionDto, requestedAmount: number): number {
+  const nextBidAmount = calculateNextBidAmount(auction);
+  if (nextBidAmount === null) {
+    throw validationError("Auction cannot accept another bid.");
+  }
+
+  const requestedCents = toCents(requestedAmount);
+  const currentCents = toCents(auction.currentPrice);
+  const nextCents = toCents(nextBidAmount);
+  const stepCents = toCents(auction.incrementStep);
+  const ceilingCents = auction.ceilingPrice === null ? null : toCents(auction.ceilingPrice);
+  const effectiveCents =
+    ceilingCents !== null && requestedCents > ceilingCents ? ceilingCents : requestedCents;
+
+  if (effectiveCents < nextCents) {
+    throw validationError(`Bid amount must be at least ${nextBidAmount}.`);
+  }
+
+  if (ceilingCents !== null && effectiveCents === ceilingCents) {
+    return fromCents(effectiveCents);
+  }
+
+  if ((effectiveCents - currentCents) % stepCents !== 0) {
+    throw validationError(`Bid amount must align to increment step ${auction.incrementStep}.`);
+  }
+
+  return fromCents(effectiveCents);
+}
+
 function hasAuctionEnded(auction: AuctionDto, now: Date): boolean {
   return new Date(auction.endAt).getTime() <= now.getTime();
 }
@@ -736,12 +765,11 @@ async function processBidWithMysqlLock(
       return { kind: "rejected", bid: rejectedBid, message: reason };
     }
 
-    const nextBidAmount = calculateNextBidAmount(auction);
-    if (nextBidAmount === null || toCents(input.amount) !== toCents(nextBidAmount)) {
-      const reason =
-        nextBidAmount === null
-          ? "Auction cannot accept another bid."
-          : `Bid amount must be exactly ${nextBidAmount}.`;
+    let acceptedAmount: number;
+    try {
+      acceptedAmount = normalizeRequestedBidAmount(auction, input.amount);
+    } catch (error) {
+      const reason = error instanceof AppError ? error.message : "Bid amount is invalid.";
       const rejectedBid = await recordRejectedBid(connection, auctionId, input, reason);
       await connection.commit();
       committed = true;
@@ -751,14 +779,14 @@ async function processBidWithMysqlLock(
     const acceptedBid = await insertBid(connection, {
       auctionId,
       userId: input.userId,
-      amount: nextBidAmount,
+      amount: acceptedAmount,
       requestId: input.requestId,
       accepted: true,
       rejectReason: null
     });
 
     const previousWinnerId = auction.currentWinnerId;
-    auction = await updateAuctionCurrentBid(connection, auctionId, nextBidAmount, input.userId);
+    auction = await updateAuctionCurrentBid(connection, auctionId, acceptedAmount, input.userId);
     await insertAuctionEvent(connection, {
       auctionId,
       eventType: "bid.accepted",
@@ -766,7 +794,7 @@ async function processBidWithMysqlLock(
         auctionId,
         bidId: acceptedBid.id,
         userId: input.userId,
-        amount: nextBidAmount,
+        amount: acceptedAmount,
         requestId: input.requestId,
         previousWinnerId
       }

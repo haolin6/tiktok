@@ -74,7 +74,7 @@ p99Ms=35
 - 触发：通过真实 HTTP `POST /api/auctions/:id/bids` 出价，不直接调用 service 跳过广播。
 - 清理：结束时关闭 sockets、hub、app、pool。
 
-## 评委口径
+## 验收口径
 
 可以说明：当前仓库有本机 100/200 WebSocket 广播 fanout 证明，以及 100 次并发出价一致性证明。
 

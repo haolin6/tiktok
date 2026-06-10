@@ -9,17 +9,18 @@
 1. 后台进入 `/admin/auctions/new`，创建商品和竞拍规则。
 2. 在发布页填写自动延时参数：延时触发阈值秒、每次延长秒数。
 3. 后台进入 `/admin/auctions`，对 `Scheduled` 竞拍进入编辑页并修改规则。
-4. A/B/C 常驻用户入口进入 `/live/:roomId?userId=<id>`；若要固定某一场，使用 `/live/:roomId?auctionId=<id>&userId=<id>`；A 出价后 B 出价。
-5. A 页面收到 `user.outbid` 被超越提示。
-6. 结束前出价触发自动延时提示。
-7. 封顶成交后生成订单，赢家进入 `/pay/:orderId` 模拟支付。
-8. 创建无出价竞拍并到期，直播间展示“竞拍已流拍，无人成交”且无支付入口。
-9. 运行四种 `demo:concurrency`，验证并发一致性。
-10. 运行 `demo:realtime-fanout -- --clients=100/200`，验证本机广播 fanout。
+4. A/B/C 常驻用户入口进入 `/live/:roomId?userId=<id>`；若要固定某一场，使用 `/live/:roomId?auctionId=<id>&userId=<id>`。
+5. 检查加价器默认选中下一口价，点击 `+ / -` 可以多档调整金额，到封顶价时显示“已到封顶价”。
+6. A 出价后继续自己加价，页面保持领先反馈；B 多档超过 A 后，A 页面收到 `user.outbid` 被超越提示。
+7. 结束前出价触发自动延时提示。
+8. 封顶成交后生成订单，赢家进入 `/pay/:orderId` 模拟支付。
+9. 创建无出价竞拍并到期，直播间展示“竞拍已流拍，无人成交”且无支付入口。
+10. 运行四种 `demo:concurrency`，验证并发一致性。
+11. 运行 `demo:realtime-fanout -- --clients=100/200`，验证本机广播 fanout。
 
-## 发现问题和修补
+## 发现问题和处理结果
 
-| 问题 | 修补结果 | 证据 |
+| 问题 | 处理结果 | 证据 |
 |---|---|---|
 | `user.outbid` 已在协议中声明但未端到端实现 | 服务端定向向 `user:{previousWinnerId}` 发事件，前端展示被超越提示 | `npm run test`、`npm run test:e2e` |
 | 后端支持 `auction.passed`，前端缺少明确流拍结果 | 直播间监听并展示“竞拍已流拍，无人成交”，不显示支付入口 | `npm run test:e2e` |
@@ -29,6 +30,8 @@
 | 缺少 WebSocket fanout 证明 | 新增 100/200 本机 fanout 脚本和证据文档 | `docs/performance_evidence.md` |
 | 多标签或切换用户时在线数可能被低估 | presence 改为按 room、user 和 socketId 计数，只在同一用户全部 socket 断开后移除在线用户 | `npm run test -w @live-auction/api` |
 | 常驻直播间成交或取消后可能切回同房间其它竞拍 | 无 `Running` 竞拍时保留当前终态竞拍，收到取消事件后主动刷新当前场 snapshot，避免出价用户看到旧成交支付入口 | `npm run build -w @live-auction/web`、`npm run test -w @live-auction/api` |
+| 直播间只能按下一口价出价，缺少真实竞拍的多档加价 | 后端允许合法步长的多档出价，前端新增 `+ / -` 加价器、封顶提示和过期金额同步 | `npm run test -w @live-auction/api`、`npm run test:e2e` |
+| 竞价氛围偏功能面板，缺少领先/被超越/倒计时反馈 | 新增领先提示、被超越 shake、最后倒计时 pulse、排行榜当前用户高亮和名次差距提示 | `npm run build`、`npm run test:e2e` |
 
 ## 剩余边界
 

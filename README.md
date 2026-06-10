@@ -14,16 +14,18 @@
 | 角色 | 负责人 |
 | 分工说明 | 负责需求拆解、前端页面、后端 API、WebSocket 实时同步、MySQL/Redis 一致性、测试、文档和演示材料 |
 | 源代码仓库 | https://github.com/haolin6/tiktok |
-| 演示视频 | https://www.bilibili.com/video/BV1z8EU6QEvx/?share_source=copy_web&vd_source=7809f2ded1c1625fb272ec03bd331ed9 |
+| 演示视频 | https://www.bilibili.com/video/BV13dEX6nEtC/?share_source=copy_web&vd_source=7809f2ded1c1625fb272ec03bd331ed9 |
 | 在线 Demo | 未部署线上 Demo；通过本地运行说明和演示视频替代 |
 
-演示视频说明：旧视频链接已移除，当前使用重录后的 B 站公开视频链接。
+演示视频说明：当前使用重录后的 B 站公开视频链接。
 
-## 评委快速验收路径
+视频覆盖：后台发布与延时参数、Scheduled 规则编辑、A/B/C 常驻用户直播间、实时出价同步、多档出价、被超越提醒、自动延时、封顶成交、模拟支付、流拍/取消终态、100 并发一致性和 200 fanout 证据。
 
-建议评委按下面顺序快速检查：
+## 快速验收路径
 
-1. 先看三分钟演示视频，确认后台发布、直播间出价、实时同步、成交订单、模拟支付和并发一致性证据；评委也可以按下方本地路径和验收命令复现。
+建议验收者按下面顺序快速检查：
+
+1. 先看三分钟演示视频，确认后台发布、直播间出价、实时同步、成交订单、模拟支付和并发一致性证据；也可以按下方本地路径和验收命令复现。
 2. 本地运行后，按路径依次打开 `/admin/auctions/new`、`/admin/auctions`、`/admin/auctions/:id/edit`、`/live/:roomId?userId=<id>`、`/pay/:orderId`、`/admin/orders`；演示指定场次时可用 `/live/:roomId?auctionId=<id>&userId=<id>`。
 3. 技术证据优先查看 `docs/final_acceptance_log.md`、`docs/performance_evidence.md`、`docs/ai_usage_evidence.md` 和 `docs/websocket_event_protocol.md`。
 4. 当前版本没有部署线上 Demo，没有接入真实直播推流、真实支付、真实图片上传或运行时大模型 API，也没有完成 1000+ 在线用户线上压测。
@@ -34,8 +36,8 @@
 
 - 后台发布竞拍：创建商品和竞拍规则，支持配置自动延时参数，支持创建后立即开始竞拍。
 - 后台规则编辑：`Scheduled` 竞拍可在开始前修改起拍价、加价幅度、封顶价、时间和延时参数。
-- 用户直播间出价：演示页面预置用户 A/B/C，便于手动多端录屏；后端出价链路支持更多已存在的 `bidder` 用户参与同一竞拍，`demo:concurrency` 已验证 100 个不同用户同时出价。
-- WebSocket 实时同步：同步当前价、领先者、最近出价、排行榜、延时、成交、流拍、取消、支付和被超越提醒。
+- 用户直播间出价：演示页面预置用户 A/B/C，便于手动多端录屏；支持下一口价、多档出价和 `+ / -` 加价器；后端出价链路支持更多已存在的 `bidder` 用户参与同一竞拍，`demo:concurrency` 已验证 100 个不同用户同时出价。
+- WebSocket 实时同步：同步当前价、领先者、最近出价、排行榜、延时、成交、流拍、取消、支付和被超越提醒；直播间对领先、被超越、最后倒计时和当前排名提供可见反馈。
 - 竞拍规则：支持固定加价、封顶成交、结束前自动延时、到期成交或流拍、异常取消。
 - 订单链路：成交后生成订单，赢家可进入模拟支付页，后台和用户端可查看结果。
 - 并发一致性：通过 Redis lock、Redis 幂等 key、MySQL 事务和唯一约束保护出价和订单唯一性。
@@ -43,7 +45,7 @@
 
 ## AI 辅助全栈开发方式
 
-本项目采用 spec-first 的 AI 协作方式完成全栈链路。开发过程先把宣讲版课题拆成节点目标，再为每个节点固定范围、接口边界、非目标和验收命令，随后按节点推进前端、后端、数据层、实时通信、测试和文档。
+本项目采用方案先行的 AI 协作方式完成全栈链路。开发过程先把宣讲版课题拆成节点目标，再为每个节点固定范围、接口边界、非目标和验收命令，随后按节点推进前端、后端、数据层、实时通信、测试和文档。
 
 AI 主要参与：
 
@@ -153,7 +155,7 @@ npm run demo:realtime-fanout -- --clients=200
 - `docs/final_acceptance_log.md`：2026-06-10 最终验收命令和结果
 - `docs/ai_usage_evidence.md`：AI 使用流程和证据
 - `docs/performance_evidence.md`：并发一致性和 WebSocket fanout 证明
-- `docs/internal_review_notes.md`：本地内测和修补记录
+- `docs/internal_review_notes.md`：本地内测和处理记录
 - `docs/demo_video_script.md`：三分钟成果演示视频脚本
 - `docs/technical_defense.md`：技术答辩说明
 - `docs/concurrency_demo.md`：并发一致性演示说明

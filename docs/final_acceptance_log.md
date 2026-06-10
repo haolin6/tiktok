@@ -2,7 +2,7 @@
 
 日期：2026-06-10
 
-本日志记录挑战赛反馈修补后的本机验收。执行环境为 `/Users/haolin6/Documents/tiktok`，本地 MySQL 8.0 和 Redis 已启动。
+本日志记录挑战赛交付完善后的本机验收。执行环境为 `/Users/haolin6/Documents/tiktok`，本地 MySQL 8.0 和 Redis 已启动。
 
 ## 前置检查
 
@@ -67,7 +67,7 @@ PONG
 
 ```text
 packages/shared: 2 files passed, 5 tests passed
-apps/api: 1 file passed, 14 tests passed
+apps/api: 1 file passed, 16 tests passed
 ```
 
 新增覆盖点：
@@ -77,6 +77,7 @@ apps/api: 1 file passed, 14 tests passed
 - 空 body 和未知字段被拒绝。
 - `user.outbid` 只定向给 previous winner。
 - `bid.accepted.payload.previousWinnerId` 与 MySQL `auction_events` 一致。
+- 多档出价、非步长拒绝、封顶截断和当前领先者继续加价。
 
 ### `npm run test:e2e`
 
@@ -85,8 +86,8 @@ apps/api: 1 file passed, 14 tests passed
 摘要：
 
 ```text
-Running 6 tests using 1 worker
-6 passed
+Running 8 tests using 1 worker
+8 passed
 ```
 
 新增覆盖点：
@@ -97,6 +98,8 @@ Running 6 tests using 1 worker
 - 流拍时直播间显示“竞拍已流拍，无人成交”，且不显示支付入口。
 - 发布页填写自动延时参数并落到 API。
 - 后台列表进入未开始竞拍编辑页，修改规则后 API 持久化。
+- 多档加价器默认金额、`+ / -` 调整、封顶提示和成交后禁用。
+- 当前领先用户继续加价、他人多档超过后的被超越提示。
 
 端口说明：Playwright 配置 `reuseExistingServer = false`。执行前已确认旧的 `3000/4000` dev server 进程并释放端口，否则会被端口占用阻断。
 
@@ -202,5 +205,141 @@ p95Ms=35
 
 - 线上 Demo：未部署。
 - 1000+ 在线：未做线上级压测；当前只有本机 100/200 fanout 证明。
-- 演示视频：旧视频链接已移除，已替换为 B 站公开视频链接。
+- 演示视频：已替换为 B 站公开视频链接。
 - 业务运行时 AI：未接入大模型 API，AI 只用于开发协作和交付材料整理。
+
+## 2026-06-10 最后五项完善补充验收
+
+最后完善内容：
+
+- AI 人工决策表。
+- README 视频亮点说明。
+- 多档出价和 `+ / -` 加价器。
+- 直播间竞价氛围动画与排名反馈。
+- 最后小改验收记录。
+
+### `npm run build`
+
+结果：通过。
+
+摘要：
+
+```text
+@live-auction/shared build: tsc -p tsconfig.json
+@live-auction/api build: tsc -p tsconfig.json
+@live-auction/web build: tsc -p tsconfig.json && vite build
+✓ built in 527ms
+```
+
+### `npm run test -w @live-auction/shared`
+
+结果：通过。
+
+摘要：
+
+```text
+packages/shared: 2 files passed, 5 tests passed
+```
+
+### `npm run test -w @live-auction/api`
+
+结果：通过。
+
+摘要：
+
+```text
+apps/api: 1 file passed, 16 tests passed
+```
+
+补充覆盖点：
+
+- 多档出价：支持高于下一口价的合法步长金额。
+- 非步长金额拒绝，低于最新下一口价拒绝。
+- 当前领先者可以继续加价。
+- 超过封顶价时按封顶价接受并成交。
+- 封顶价不按步长对齐时可作为终点例外。
+- 幂等、被超越事件和终态拒绝继续保持回归覆盖。
+
+### `npm run test:e2e`
+
+结果：通过。
+
+摘要：
+
+```text
+Running 8 tests using 1 worker
+8 passed
+```
+
+补充覆盖点：
+
+- 加价器默认选中下一口价。
+- 点击 `+` 和 `-` 调整出价金额。
+- 到封顶价时显示“已到封顶价”并成交后禁用出价。
+- 当前领先用户继续加价后仍保持领先反馈。
+- 他人多档超过后，原领先用户看到“已被超越”。
+- 取消、流拍、成交终态不显示错误支付入口。
+
+## 2026-06-10 提交前最终检查
+
+本轮检查用于提交 GitHub 前确认代码、测试和文档状态。
+
+### 文档检查
+
+结果：通过。
+
+检查项：
+
+- 演示视频链接集中为 B 站公开视频链接。
+- 材料关键词检查通过，未发现过程痕迹或占位内容。
+- `README.md`、项目交付总结、演示提交文档、技术答辩材料和内部验收记录均已同步多档出价、加价器和竞价氛围反馈。
+
+### `npm run build`
+
+结果：通过。
+
+摘要：
+
+```text
+@live-auction/shared build: tsc -p tsconfig.json
+@live-auction/api build: tsc -p tsconfig.json
+@live-auction/web build: tsc -p tsconfig.json && vite build
+✓ built in 597ms
+```
+
+### `npm run test -w @live-auction/shared`
+
+结果：通过。
+
+摘要：
+
+```text
+packages/shared: 2 files passed, 5 tests passed
+```
+
+### `npm run test -w @live-auction/api`
+
+结果：通过。
+
+摘要：
+
+```text
+apps/api: 1 file passed, 16 tests passed
+```
+
+### `npm run test:e2e`
+
+结果：通过。
+
+说明：首次执行时发现已有本地 dev server 占用 `3000/4000`，Playwright 配置要求自启动服务，因此先释放端口后重跑。
+
+摘要：
+
+```text
+Running 8 tests using 1 worker
+8 passed
+```
+
+### `git diff --check`
+
+结果：通过，无空白错误。

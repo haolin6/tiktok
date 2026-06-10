@@ -598,6 +598,158 @@ describe("node 1 API integration", () => {
     expect(terminalBidResponse.statusCode).toBe(409);
   });
 
+  it("accepts multi-step bids, clamps ceiling bids, and keeps stale amounts rejected", async () => {
+    const uniqueSuffix = `multi-step-${Date.now()}-${Math.round(Math.random() * 100000)}`;
+
+    const multiStepProduct = await createProduct(app, `多档出价商品 ${uniqueSuffix}`);
+    const multiStepAuction = await createAuction(app, roomId, multiStepProduct.product.id, {
+      startPrice: 850,
+      incrementStep: 50,
+      ceilingPrice: null
+    });
+    await startAuction(app, multiStepAuction.auction.id);
+
+    const multiStepResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${multiStepAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 950,
+        requestId: `${uniqueSuffix}-a-950`
+      }
+    });
+    expect(multiStepResponse.statusCode).toBe(200);
+    const multiStepBody = multiStepResponse.json<PlaceBidResponse>();
+    expect(multiStepBody.bid.amount).toBe(950);
+    expect(multiStepBody.auction.currentPrice).toBe(950);
+    expect(multiStepBody.snapshot.nextBidAmount).toBe(1000);
+
+    const staleResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${multiStepAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderBId,
+        amount: 900,
+        requestId: `${uniqueSuffix}-b-stale-900`
+      }
+    });
+    expect(staleResponse.statusCode).toBe(409);
+    expect(staleResponse.json<{ error: { message: string } }>().error.message).toContain(
+      "at least 1000"
+    );
+    expect(Number((await readAuctionState(pool, multiStepAuction.auction.id)).current_price)).toBe(950);
+
+    const selfRaiseResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${multiStepAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 1000,
+        requestId: `${uniqueSuffix}-a-self-1000`
+      }
+    });
+    expect(selfRaiseResponse.statusCode).toBe(200);
+    const selfRaiseBody = selfRaiseResponse.json<PlaceBidResponse>();
+    expect(selfRaiseBody.previousWinnerId).toBe(bidderAId);
+    expect(selfRaiseBody.auction.currentWinnerId).toBe(bidderAId);
+    expect(selfRaiseBody.auction.currentPrice).toBe(1000);
+
+    const unalignedProduct = await createProduct(app, `非步长拒绝商品 ${uniqueSuffix}`);
+    const unalignedAuction = await createAuction(app, roomId, unalignedProduct.product.id, {
+      startPrice: 850,
+      incrementStep: 50,
+      ceilingPrice: null
+    });
+    await startAuction(app, unalignedAuction.auction.id);
+    const unalignedResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${unalignedAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 920,
+        requestId: `${uniqueSuffix}-unaligned-920`
+      }
+    });
+    expect(unalignedResponse.statusCode).toBe(409);
+    expect(unalignedResponse.json<{ error: { message: string } }>().error.message).toContain(
+      "increment step 50"
+    );
+    expect(Number((await readAuctionState(pool, unalignedAuction.auction.id)).current_price)).toBe(850);
+
+    const orderedProduct = await createProduct(app, `顺序竞争商品 ${uniqueSuffix}`);
+    const orderedAuction = await createAuction(app, roomId, orderedProduct.product.id, {
+      startPrice: 850,
+      incrementStep: 50,
+      ceilingPrice: null
+    });
+    await startAuction(app, orderedAuction.auction.id);
+    const firstOrderedResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${orderedAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderBId,
+        amount: 900,
+        requestId: `${uniqueSuffix}-b-900`
+      }
+    });
+    expect(firstOrderedResponse.statusCode).toBe(200);
+    const secondOrderedResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${orderedAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 950,
+        requestId: `${uniqueSuffix}-a-950-after-900`
+      }
+    });
+    expect(secondOrderedResponse.statusCode).toBe(200);
+    expect(secondOrderedResponse.json<PlaceBidResponse>().auction.currentPrice).toBe(950);
+
+    const ceilingProduct = await createProduct(app, `封顶截断商品 ${uniqueSuffix}`);
+    const ceilingAuction = await createAuction(app, roomId, ceilingProduct.product.id, {
+      startPrice: 850,
+      incrementStep: 50,
+      ceilingPrice: 1000
+    });
+    await startAuction(app, ceilingAuction.auction.id);
+    const ceilingResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${ceilingAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderCId,
+        amount: 1050,
+        requestId: `${uniqueSuffix}-c-1050-clamp`
+      }
+    });
+    expect(ceilingResponse.statusCode).toBe(200);
+    const ceilingBody = ceilingResponse.json<PlaceBidResponse>();
+    expect(ceilingBody.bid.amount).toBe(1000);
+    expect(ceilingBody.auction.status).toBe("Sold");
+    expect(ceilingBody.snapshot.order?.amount).toBe(1000);
+
+    const oddCeilingProduct = await createProduct(app, `非步长封顶商品 ${uniqueSuffix}`);
+    const oddCeilingAuction = await createAuction(app, roomId, oddCeilingProduct.product.id, {
+      startPrice: 850,
+      incrementStep: 50,
+      ceilingPrice: 980
+    });
+    await startAuction(app, oddCeilingAuction.auction.id);
+    const oddCeilingResponse = await app.inject({
+      method: "POST",
+      url: `/api/auctions/${oddCeilingAuction.auction.id}/bids`,
+      payload: {
+        userId: bidderAId,
+        amount: 980,
+        requestId: `${uniqueSuffix}-a-980-ceiling`
+      }
+    });
+    expect(oddCeilingResponse.statusCode).toBe(200);
+    const oddCeilingBody = oddCeilingResponse.json<PlaceBidResponse>();
+    expect(oddCeilingBody.bid.amount).toBe(980);
+    expect(oddCeilingBody.auction.status).toBe("Sold");
+    expect(oddCeilingBody.snapshot.order?.amount).toBe(980);
+  });
+
   it("rejects invalid bids and keeps the auction price stable", async () => {
     const uniqueSuffix = `node2-reject-${Date.now()}-${Math.round(Math.random() * 100000)}`;
     const productBody = await createProduct(app, `节点2拒绝测试商品 ${uniqueSuffix}`);
@@ -624,8 +776,8 @@ describe("node 1 API integration", () => {
       url: `/api/auctions/${auctionBody.auction.id}/bids`,
       payload: {
         userId: bidderAId,
-        amount: 65,
-        requestId: `${uniqueSuffix}-jump`
+        amount: 66,
+        requestId: `${uniqueSuffix}-unaligned`
       }
     });
     expect(jumpResponse.statusCode).toBe(409);
@@ -1190,7 +1342,7 @@ describe("node 1 API integration", () => {
       });
       const wrongAmountAck = await sendRealtime(socketA, "bid.place", {
         auctionId: auctionBody.auction.id,
-        amount: 119,
+        amount: 115,
         requestId: wrongAmountRequestId
       });
       expect(wrongAmountAck.ok).toBe(false);
@@ -1198,10 +1350,10 @@ describe("node 1 API integration", () => {
       expect(rejectedEvent.data.payload).toMatchObject({
         auctionId: auctionBody.auction.id,
         userId: bidderAId,
-        amount: 119,
+        amount: 115,
         requestId: wrongAmountRequestId
       });
-      expect(rejectedEvent.data.payload.reason).toContain("109");
+      expect(rejectedEvent.data.payload.reason).toContain("increment step 10");
       await noRejectedForB;
       expect(await countBids(pool, auctionBody.auction.id, { accepted: false })).toBe(1);
       expect(await countEvents(pool, auctionBody.auction.id, "bid.rejected")).toBe(1);
@@ -1387,7 +1539,7 @@ describe("node 1 API integration", () => {
       url: `/api/auctions/${rejectedAuction.auction.id}/bids`,
       payload: {
         userId: bidderAId,
-        amount: 119,
+        amount: 115,
         requestId: rejectedRequestId
       }
     });
@@ -1397,7 +1549,7 @@ describe("node 1 API integration", () => {
       url: `/api/auctions/${rejectedAuction.auction.id}/bids`,
       payload: {
         userId: bidderAId,
-        amount: 119,
+        amount: 115,
         requestId: rejectedRequestId
       }
     });
@@ -1409,7 +1561,7 @@ describe("node 1 API integration", () => {
       bidRequestKey(rejectedAuction.auction.id, bidderAId, rejectedRequestId)
     );
     expect(rejectedState?.startsWith("rejected:")).toBe(true);
-    expect(rejectedState).toContain("Bid amount must be exactly 109.");
+    expect(rejectedState).toContain("Bid amount must align to increment step 10.");
 
     const processingProduct = await createProduct(app, `节点3幂等processing商品 ${uniqueSuffix}`);
     const processingAuction = await createAuction(app, roomId, processingProduct.product.id, {

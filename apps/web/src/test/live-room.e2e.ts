@@ -130,6 +130,7 @@ test("live room keeps two pages synchronized through bids, sold state, payment, 
     await pageA.setViewportSize({ width: 390, height: 800 });
     await expect(pageA.getByTestId("auction-panel")).toBeVisible();
     await expect(pageA.getByTestId("metric-grid")).toBeVisible();
+    await expect(pageA.getByTestId("bid-sheet")).toBeVisible();
     await expect(pageA.getByTestId("bid-button")).toBeVisible();
     const layout = await pageA.evaluate(() => {
       const documentElement = document.documentElement;
@@ -137,6 +138,7 @@ test("live room keeps two pages synchronized through bids, sold state, payment, 
       const selectors = [
         "[data-testid='auction-panel']",
         "[data-testid='metric-grid']",
+        "[data-testid='bid-sheet']",
         "[data-testid='bid-button']",
         "[data-testid='current-price']"
       ];
@@ -160,6 +162,36 @@ test("live room keeps two pages synchronized through bids, sold state, payment, 
   } finally {
     await context.close();
   }
+});
+
+test("live room bid incrementer supports multi-step amounts and ceiling clamp", async ({ page, request }) => {
+  const demo = await apiGet<DemoContextResponse>(request, "/api/demo/context");
+  const suffix = `${Date.now()}-${Math.round(Math.random() * 100000)}`;
+  const title = `E2E多档加价器商品 ${suffix}`;
+  const started = await createAuctionFixture(request, demo.room.id, title, {
+    start: true,
+    startPrice: 850,
+    incrementStep: 50,
+    ceilingPrice: 1000
+  });
+
+  await openLiveRoom(page, demo.room.id, title, demo.bidders[0]?.nickname, started.auction.id);
+  await expect(page.getByTestId("selected-bid-amount")).toHaveText("¥900.00");
+
+  await page.getByTestId("increase-bid").click();
+  await expect(page.getByTestId("selected-bid-amount")).toHaveText("¥950.00");
+  await page.getByTestId("decrease-bid").click();
+  await expect(page.getByTestId("selected-bid-amount")).toHaveText("¥900.00");
+
+  await page.getByTestId("increase-bid").click();
+  await page.getByTestId("increase-bid").click();
+  await expect(page.getByTestId("selected-bid-amount")).toHaveText("¥1000.00");
+  await expect(page.getByTestId("bid-amount-notice")).toHaveText("已到封顶价");
+
+  await page.getByTestId("bid-button").click();
+  await expect(page.getByTestId("current-price")).toHaveText("¥1000.00");
+  await expect(page.getByText("成交", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("bid-button")).toBeDisabled();
 });
 
 test("admin auction list cancels a running auction from the page", async ({ page, request }) => {
@@ -235,7 +267,7 @@ test("permanent live room keeps the canceled auction after a bid and does not sh
   });
 
   await expect(page.getByRole("heading", { name: currentTitle })).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByText("已取消")).toBeVisible();
+  await expect(page.getByText("已取消", { exact: true })).toBeVisible();
   await expect(page.getByTestId("remaining-time")).toHaveText("0.0s");
   await page.waitForTimeout(3_500);
   await expect(page.getByRole("heading", { name: currentTitle })).toBeVisible();
@@ -263,9 +295,16 @@ test("live room shows an outbid notice without selling the auction", async ({ br
 
     await pageA.getByTestId("bid-button").click();
     await expect(pageB.getByTestId("current-price")).toHaveText("¥109.00");
+    await expect(pageA.getByText("当前您已是最高价")).toBeVisible();
 
+    await pageA.getByTestId("increase-bid").click();
+    await pageA.getByTestId("bid-button").click();
+    await expect(pageB.getByTestId("current-price")).toHaveText("¥129.00");
+    await expect(pageA.getByText("当前您已是最高价")).toBeVisible();
+
+    await pageB.getByTestId("increase-bid").click();
     await pageB.getByTestId("bid-button").click();
-    await expect(pageA.getByTestId("current-price")).toHaveText("¥119.00");
+    await expect(pageA.getByTestId("current-price")).toHaveText("¥149.00");
     await expect(pageA.getByTestId("notice")).toContainText("已被超越");
     await expect(pageA.getByText("去支付")).toHaveCount(0);
   } finally {

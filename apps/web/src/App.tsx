@@ -118,6 +118,36 @@ function remainingMilliseconds(
   return Math.max(0, end - correctedServerNow);
 }
 
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function fromCents(value: number): number {
+  return value / 100;
+}
+
+function normalizeBidAmountForSnapshot(
+  current: number | null,
+  snapshot: AuctionSnapshotResponse
+): { amount: number | null; notice: string | null } {
+  if (snapshot.auction.status !== "Running" || snapshot.nextBidAmount === null) {
+    return { amount: null, notice: null };
+  }
+
+  const nextBidAmount = snapshot.nextBidAmount;
+  const ceilingPrice = snapshot.auction.ceilingPrice;
+  const currentAmount = current ?? nextBidAmount;
+  if (ceilingPrice !== null && toCents(currentAmount) > toCents(ceilingPrice)) {
+    return { amount: ceilingPrice, notice: "已到封顶价" };
+  }
+
+  if (toCents(currentAmount) < toCents(nextBidAmount)) {
+    return { amount: nextBidAmount, notice: "价格已更新" };
+  }
+
+  return { amount: currentAmount, notice: null };
+}
+
 function formatRemainingTime(valueMs: number): string {
   const totalTenths = Math.max(0, Math.ceil(valueMs / 100));
   const minutes = Math.floor(totalTenths / 600);
@@ -816,6 +846,8 @@ function LiveRoomPage({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<LiveNotice | null>(null);
+  const [selectedBidAmount, setSelectedBidAmount] = useState<number | null>(null);
+  const [bidAmountNotice, setBidAmountNotice] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("disconnected");
   const [onlineCount, setOnlineCount] = useState(0);
   const [clockMs, setClockMs] = useState(Date.now());
@@ -835,6 +867,8 @@ function LiveRoomPage({
     if (previousAuctionId !== null && previousAuctionId !== value.auction.id) {
       setRanking([]);
       setNotice(null);
+      setSelectedBidAmount(null);
+      setBidAmountNotice(null);
     }
   }, []);
 
@@ -846,8 +880,24 @@ function LiveRoomPage({
       setSnapshot(null);
       setRanking([]);
       setNotice(null);
+      setSelectedBidAmount(null);
+      setBidAmountNotice(null);
     }
   }, []);
+
+  useEffect(() => {
+    if (!snapshot) {
+      setSelectedBidAmount(null);
+      setBidAmountNotice(null);
+      return;
+    }
+
+    setSelectedBidAmount((current) => {
+      const normalized = normalizeBidAmountForSnapshot(current, snapshot);
+      setBidAmountNotice(normalized.notice);
+      return normalized.amount;
+    });
+  }, [snapshot]);
 
   useEffect(() => {
     if (!demo || selectedUserId !== null) {
@@ -1042,8 +1092,40 @@ function LiveRoomPage({
     };
   }, [auction?.id, applySnapshot, demo, loadSnapshot, reconnectTick, roomId, selectedUserId, showNotice]);
 
+  function increaseBidAmount() {
+    if (!snapshot || snapshot.nextBidAmount === null) {
+      return;
+    }
+
+    setSelectedBidAmount((current) => {
+      const baseAmount = current ?? snapshot.nextBidAmount ?? 0;
+      const increased = fromCents(toCents(baseAmount) + toCents(snapshot.auction.incrementStep));
+      if (snapshot.auction.ceilingPrice !== null && toCents(increased) >= toCents(snapshot.auction.ceilingPrice)) {
+        setBidAmountNotice("已到封顶价");
+        return snapshot.auction.ceilingPrice;
+      }
+
+      setBidAmountNotice(null);
+      return increased;
+    });
+  }
+
+  function decreaseBidAmount() {
+    if (!snapshot || snapshot.nextBidAmount === null) {
+      return;
+    }
+
+    setSelectedBidAmount((current) => {
+      const baseAmount = current ?? snapshot.nextBidAmount ?? 0;
+      const decreased = fromCents(toCents(baseAmount) - toCents(snapshot.auction.incrementStep));
+      const bounded = Math.max(toCents(decreased), toCents(snapshot.nextBidAmount ?? decreased));
+      setBidAmountNotice(null);
+      return fromCents(bounded);
+    });
+  }
+
   async function placeBid() {
-    if (!snapshot || !selectedUserId || snapshot.nextBidAmount === null) {
+    if (!snapshot || !selectedUserId || selectedBidAmount === null) {
       return;
     }
 
@@ -1055,7 +1137,7 @@ function LiveRoomPage({
         method: "POST",
         body: {
           userId: selectedUserId,
-          amount: snapshot.nextBidAmount,
+          amount: selectedBidAmount,
           requestId: `${selectedUserId}-${snapshot.auction.id}-${Date.now()}`
         }
       });
@@ -1078,7 +1160,7 @@ function LiveRoomPage({
   );
   const canBid =
     snapshot?.auction.status === "Running" &&
-    snapshot.nextBidAmount !== null &&
+    selectedBidAmount !== null &&
     !busy &&
     selectedUserId !== null;
   const isWinner = snapshot?.order?.buyerId === selectedUserId;
@@ -1090,6 +1172,17 @@ function LiveRoomPage({
     snapshot.currentWinner?.id === selectedUserId &&
     selectedUserId !== null;
   const isPassedWithoutOrder = snapshot?.auction.status === "Passed" && snapshot.order === null;
+  const isCanceled = snapshot?.auction.status === "Canceled";
+  const rankingSource = ranking.length > 0 ? ranking : snapshot?.recentBids ?? [];
+  const currentUserRankIndex = selectedUserId === null
+    ? -1
+    : rankingSource.findIndex((bid) => bid.userId === selectedUserId);
+  const currentUserBestBid = currentUserRankIndex >= 0 ? rankingSource[currentUserRankIndex] : null;
+  const leadingBid = rankingSource[0] ?? null;
+  const gapToLeader =
+    currentUserBestBid && leadingBid && leadingBid.userId !== currentUserBestBid.userId
+      ? Math.max(0, leadingBid.amount - currentUserBestBid.amount)
+      : 0;
 
   return (
     <PageShell>
@@ -1131,7 +1224,7 @@ function LiveRoomPage({
                 <span>当前价</span>
                 <strong data-testid="current-price">{formatMoney(snapshot.currentPrice)}</strong>
               </div>
-              {currentUserLeading ? <div className="leader-strip">领先中</div> : null}
+              {currentUserLeading ? <div className="leader-strip">当前您已是最高价</div> : null}
               <div className="metric-grid" data-testid="metric-grid">
                 <div>
                   <span>下一口价</span>
@@ -1154,9 +1247,45 @@ function LiveRoomPage({
                   <strong>{snapshot.auction.extendThresholdSec}s / +{snapshot.auction.extendDurationSec}s</strong>
                 </div>
               </div>
-              <button className="bid-button" data-testid="bid-button" disabled={!canBid} onClick={placeBid}>
-                {snapshot.nextBidAmount === null ? "不可出价" : `出价 ${formatMoney(snapshot.nextBidAmount)}`}
-              </button>
+              <div className="bid-sheet" data-testid="bid-sheet">
+                <div className="bid-sheet-head">
+                  <span>我的出价</span>
+                  <strong data-testid="selected-bid-amount">{formatMoney(selectedBidAmount)}</strong>
+                </div>
+                <div className="bid-stepper">
+                  <button
+                    type="button"
+                    data-testid="decrease-bid"
+                    disabled={!canBid || selectedBidAmount === null || snapshot.nextBidAmount === null || toCents(selectedBidAmount) <= toCents(snapshot.nextBidAmount)}
+                    onClick={decreaseBidAmount}
+                    aria-label="减少出价"
+                  >
+                    -
+                  </button>
+                  <div>
+                    <span>加价幅度</span>
+                    <strong>{formatMoney(snapshot.auction.incrementStep)}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="increase-bid"
+                    disabled={!canBid || selectedBidAmount === null || snapshot.nextBidAmount === null || (snapshot.auction.ceilingPrice !== null && toCents(selectedBidAmount) >= toCents(snapshot.auction.ceilingPrice))}
+                    onClick={increaseBidAmount}
+                    aria-label="增加出价"
+                  >
+                    +
+                  </button>
+                </div>
+                {snapshot.auction.ceilingPrice !== null ? (
+                  <div className="ceiling-hint">封顶价 {formatMoney(snapshot.auction.ceilingPrice)}</div>
+                ) : null}
+                {bidAmountNotice ? (
+                  <div className="bid-amount-notice" data-testid="bid-amount-notice">{bidAmountNotice}</div>
+                ) : null}
+                <button className="bid-button" data-testid="bid-button" disabled={!canBid} onClick={placeBid}>
+                  {selectedBidAmount === null ? "不可出价" : `立即出价 ${formatMoney(selectedBidAmount)}`}
+                </button>
+              </div>
               {notice ? <div className={`notice ${notice.tone}`} data-testid="notice">{notice.message}</div> : null}
               {snapshot.order ? (
                 <div className="result-panel compact">
@@ -1168,6 +1297,11 @@ function LiveRoomPage({
                 <div className="result-panel compact passed-result">
                   <strong>竞拍已流拍，无人成交</strong>
                   <span>本场没有成交订单</span>
+                </div>
+              ) : isCanceled ? (
+                <div className="result-panel compact passed-result">
+                  <strong>竞拍已取消</strong>
+                  <span>本场竞拍已结束</span>
                 </div>
               ) : null}
               <div className="bid-list">
@@ -1182,13 +1316,23 @@ function LiveRoomPage({
               </div>
               <div className="bid-list">
                 <h2>排行榜</h2>
-                {(ranking.length > 0 ? ranking : snapshot.recentBids).slice(0, 5).map((bid, index) => (
-                  <div key={`rank-${bid.id}`}>
+                {currentUserRankIndex >= 0 ? (
+                  <p className="rank-summary">
+                    你当前第 {currentUserRankIndex + 1} 名{gapToLeader > 0 ? `，距领先者差 ${formatMoney(gapToLeader)}` : "，领先中"}
+                  </p>
+                ) : (
+                  <p className="rank-summary">你暂无出价</p>
+                )}
+                {rankingSource.slice(0, 5).map((bid, index) => (
+                  <div
+                    className={`rank-row ${index === 0 ? "first" : ""} ${bid.userId === selectedUserId ? "current" : ""}`}
+                    key={`rank-${bid.id}`}
+                  >
                     <span>#{index + 1} {bid.user?.nickname ?? `用户 ${bid.userId}`}</span>
                     <strong>{formatMoney(bid.amount)}</strong>
                   </div>
                 ))}
-                {ranking.length === 0 && snapshot.recentBids.length === 0 ? (
+                {rankingSource.length === 0 ? (
                   <p className="empty small">暂无排行</p>
                 ) : null}
               </div>
